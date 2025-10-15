@@ -46,7 +46,7 @@ constexpr float camera_far_plane = 100.0f;
 
 enum class ProjectionType { PERSPECTIVE, ORTHOGRAPHIC };
 ProjectionType current_projection = ProjectionType::ORTHOGRAPHIC; // По умолчанию ортографическая
-constexpr int CYLINDER_SEGMENTS = 50; 
+constexpr int CYLINDER_SEGMENTS = 100; // УВЕЛИЧИЛ ДЛЯ ГЛАДКОСТИ
 
 // Глобальные переменные для трансформаций и анимации
 Vector model_position = {0.0f, 0.0f, -5.0f}; // ✅ Изначально перед камерой
@@ -56,6 +56,7 @@ bool model_spin = true;
 float trajectory_radius = 2.0f; 
 float ortho_scale = 5.0f; 
 float animation_speed = 0.5f;
+float cylinder_tilt = 0.3f; // Наклон цилиндра для лучшего обзора
 
 // Vulkan Buffers and Modules
 VkShaderModule vertex_shader_module;
@@ -565,6 +566,7 @@ void update(double time) {
 	ImGui::Text("Model Transformation & Animation:");
 	ImGui::SliderFloat("Trajectory Radius", &trajectory_radius, 0.5f, 5.0f);
     ImGui::SliderFloat("Animation Speed", &animation_speed, 0.0f, 2.0f);
+	ImGui::SliderFloat("Cylinder Tilt", &cylinder_tilt, 0.0f, 1.0f);
 	ImGui::InputFloat3("Translation (Manual)", reinterpret_cast<float*>(&model_position));
 	ImGui::SliderFloat("Rotation", &model_rotation, 0.0f, 2.0f * M_PI);
 	ImGui::Checkbox("Spin?", &model_spin);
@@ -635,17 +637,19 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		// NOTE: Use our index buffer
 		vkCmdBindIndexBuffer(cmd, index_buffer.buffer, offset, VK_INDEX_TYPE_UINT32);
 
-		// NOTE: Variables like model_XXX were declared globally
+		// ✅ ДОБАВЛЕН НАКЛОН ДЛЯ ЛУЧШЕГО ОБЗОРА В ПЕРСПЕКТИВЕ
+		Matrix tilt = rotation({1.0f, 0.0f, 0.0f}, cylinder_tilt);
+		Matrix base_transform = multiply(translation(model_position),
+		                                rotation({0.0f, 1.0f, 0.0f}, model_rotation));
+
 		ShaderConstants constants{
 			.projection = projection(
 				camera_fov,
 				float(veekay::app.window_width) / float(veekay::app.window_height),
 				camera_near_plane, camera_far_plane),
 
-			// Трансформация: Перемещение -> Вращение (порядок, который мы используем)
-			// Rotation(ось) * Translation(позиция)
-			.transform = multiply(translation(model_position),
-			                      rotation({0.0f, 1.0f, 0.0f}, model_rotation)),
+			// Трансформация с наклоном для лучшего обзора
+			.transform = multiply(tilt, base_transform),
 
 			.color = model_color,
 		};

@@ -98,3 +98,10 @@ code responsible for loading shaders from files will fail, because relative path
 `testbed/CMakeLists.txt` has build recipe for compiling shader files
 along with an application. Look for a comment in this file to see
 how to compile your shaders.
+
+
+
+rm -rf build-debug
+cmake --preset debug
+cmake --build build-debug --parallel
+./build-debug/testbed/testbed

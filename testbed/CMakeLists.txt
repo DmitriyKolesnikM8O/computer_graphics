@@ -9,6 +9,9 @@ set_target_properties(${PROJECT_NAME} PROPERTIES CXX_STANDARD_REQUIRED TRUE CXX_
 
 find_package(Vulkan REQUIRED)
 
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(IMGUI REQUIRED imgui)
+
 target_link_libraries(${PROJECT_NAME} veekay Vulkan::Headers)
 
 # Compile shaders
