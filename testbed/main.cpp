@@ -40,14 +40,14 @@
 */
 
 
-// Для M_PI
+
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
 
 namespace {
 
-// --- СТРУКТУРЫ ---
+
 struct Matrix {
 	float m[4][4];
 };
@@ -78,8 +78,7 @@ constexpr float camera_fov = 70.0f;
 constexpr float camera_near_plane = 0.01f;
 constexpr float camera_far_plane = 100.0f; 
 
-// --- ВАЖНО: сделаем симметричный Z-диапазон для ортографической камеры,
-// чтобы объекты с отрицательным Z (например, z = -5.0f) были внутри объёма ---
+
 constexpr float ORTHO_NEAR = -10.0f; 
 constexpr float ORTHO_FAR = 10.0f; 
 
@@ -88,28 +87,25 @@ ProjectionType current_projection = ProjectionType::ORTHOGRAPHIC; // По умо
 constexpr int CYLINDER_SEGMENTS = 100;
 
 // Глобальные переменные для трансформаций и анимации
-Vector model_position = {0.0f, 0.0f, -5.0f}; // Z по умолчанию -5 для видимости
-float model_rotation = 0.0f; // Ручное вращение
+Vector model_position = {0.0f, 0.0f, -5.0f};
+float model_rotation = 0.0f;
 Vector model_color = {0.5f, 1.0f, 0.7f };
 bool model_spin = true;
 
-// НОВЫЕ/ИЗМЕНЕННЫЕ ПЕРЕМЕННЫЕ ДЛЯ АНИМАЦИИ
+
 float trajectory_scale = 2.0f; // Масштаб для траектории "восьмерки"
 float ortho_scale = 5.0f;
 
-// --- Главное исправление скорости анимации ---
-// Теперь animation_speed управляет *масштабом времени* (time scale).
-// По умолчанию 0.2 — адекватно медленно; UI позволяет от 0 до 2.0.
+
 float animation_speed = 0.2f;
 
 float current_time = 0.0f; // Текущее "время" для параметризации траектории
-bool animation_paused = false; // Состояние паузы
+bool animation_paused = false;
 float animation_direction = 1.0f; // Направление: 1.0f (вперед) или -1.0f (назад/реверс)
 
-// Уменьшенный базовый множитель скорости вращения
 float spin_speed_multiplier = 0.05f; 
 
-float cylinder_tilt = 0.3f; // Наклон цилиндра для лучшего обзора
+float cylinder_tilt = 0.3f;
 
 // Vulkan Buffers and Modules
 VkShaderModule vertex_shader_module;
@@ -119,13 +115,12 @@ VkPipeline pipeline;
 
 VulkanBuffer vertex_buffer;
 VulkanBuffer index_buffer;
-uint32_t index_count = 0; // Хранить количество индексов цилиндра
+uint32_t index_count = 0;
 
 // --- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ---
 
 Matrix identity() {
 	Matrix result{};
-	// инициализация нулями - уже выполнена при value-initialization
 	result.m[0][0] = 1.0f;
 	result.m[1][1] = 1.0f;
 	result.m[2][2] = 1.0f;
@@ -135,7 +130,7 @@ Matrix identity() {
 
 // Ортографическая проекция: использует scale и aspect_ratio для задания границ X/Y
 // Мы ожидаем: right = scale * aspect_ratio, top = scale, left = -right, bottom = -top
-// Z преобразуется из [near_z, far_z] -> [0, 1] (Vulkan)
+// Z преобразуется из [near_z, far_z] -> [0, 1]
 Matrix orthographic(float scale, float aspect_ratio, float near_z, float far_z) {
 	Matrix result{};
 
@@ -143,16 +138,14 @@ Matrix orthographic(float scale, float aspect_ratio, float near_z, float far_z) 
 	float top = scale;
 
 	// X,Y: симметрично
-	result.m[0][0] = 1.0f / right; // 2/(r-l) / 2 => since symmetric, 1/right maps [-right,right] -> [-1,1]
+	result.m[0][0] = 1.0f / right;
 	result.m[1][1] = 1.0f / top;
 
 	// Z: map [near, far] -> [0,1] для Vulkan
-	// formula: z_ndc = (z - near) / (far - near)
-	// we place it into matrix as m[2][2] and m[3][2]
+	// z_ndc = (z - near) / (far - near)
 	result.m[2][2] = 1.0f / (far_z - near_z);
 	result.m[3][2] = -near_z / (far_z - near_z);
 
-	// Последний элемент
 	result.m[3][3] = 1.0f;
 
 	return result;
@@ -172,7 +165,6 @@ Matrix projection(float fov, float aspect_ratio, float near, float far) {
 	result.m[0][0] = cot / aspect_ratio;
 	result.m[1][1] = cot;
     
-    // Z-компонент для Vulkan: map z from [near,far] to [0,1]
 	result.m[2][2] = far / (near - far);
 	result.m[3][2] = -(far * near) / (far - near);
 	
@@ -222,7 +214,6 @@ Matrix rotation(Vector axis, float angle) {
 	return result;
 }
 
-// Умножение матриц C = A * B (используется в коде)
 Matrix multiply(const Matrix& a, const Matrix& b) {
 	Matrix result{};
 
@@ -346,7 +337,7 @@ void destroyBuffer(const VulkanBuffer& buffer) {
 	vkDestroyBuffer(device, buffer.buffer, nullptr);
 }
 
-// Генерация геометрии цилиндра (без крышек)
+
 void generateCylinder(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, float radius, float height, int segments) {
 	vertices.clear();
 	indices.clear();
@@ -357,9 +348,7 @@ void generateCylinder(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
 		float x = radius * cosf(angle);
 		float z = radius * sinf(angle);
 
-		// Нижняя вершина
 		vertices.push_back({{x, -height / 2.0f, z}});
-		// Верхняя вершина
 		vertices.push_back({{x, height / 2.0f, z}});
 	}
 
@@ -369,13 +358,11 @@ void generateCylinder(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
 		uint32_t i1 = i * 2 + 1;
 		uint32_t i2 = ((i + 1) % segments) * 2;
 		uint32_t i3 = ((i + 1) % segments) * 2 + 1;
-
-		// Первый треугольник квада: (i0, i2, i3)
+		
 		indices.push_back(i0);
 		indices.push_back(i2);
 		indices.push_back(i3);
 
-		// Второй треугольник квада: (i0, i3, i1)
 		indices.push_back(i0);
 		indices.push_back(i3);
 		indices.push_back(i1);
@@ -569,7 +556,6 @@ void initialize() {
 		}
 	}
 
-	// ГЕНЕРАЦИЯ БУФЕРОВ ДЛЯ ЦИЛИНДРА
 	std::vector<Vertex> vertices;
 	std::vector<uint32_t> indices;
 
@@ -602,10 +588,6 @@ void shutdown() {
 }
 
 void update(double time) {
-	// time — аргумент, который предоставляет framework.
-	// Обычно это *delta time* (секунды с прошлого кадра), но может быть и абсолют.
-	// Мы предполагаем, что это delta time в секундах (типичный случай).
-	// Чтобы избежать слишком быстрых эффектов, мы масштабируем время на animation_speed.
 	ImGui::Begin("Controls:");
 	
 	// 1. Управление проекцией
@@ -637,7 +619,7 @@ void update(double time) {
 	
 	const char* reverse_label = animation_direction > 0 ? "Reverse (Forward)" : "Reverse (Backward)";
 	if (ImGui::Button(reverse_label)) {
-		animation_direction *= -1.0f; // Переключаем знак
+		animation_direction *= -1.0f;
 	}
 	
 	ImGui::SliderFloat("Animation Speed (time scale)", &animation_speed, 0.0f, 2.0f, "%.3f");
@@ -664,21 +646,15 @@ void update(double time) {
 
 	// ЛОГИКА АНИМАЦИИ: Обновление времени
 	if (!animation_paused) {
-		// --- Главное изменение: current_time уже учитывает animation_speed ---
-		// time — delta seconds; animation_speed — множитель времени (time scale).
 		current_time += float(time) * animation_direction * animation_speed * 0.05f;
 	}
 
-	// t - параметр траектории (используем текущий "внутренний" time напрямую)
 	float t = current_time;
 	
-	// Движение по траектории "восьмерки" / лемниската-подобной
+	// Движение по траектории "восьмерки"
 	model_position.x = trajectory_scale * sinf(t);
 	model_position.y = trajectory_scale * sinf(t) * cosf(t);
     
-    // Для ортографического режима мы хотим, чтобы Z был в диапазоне [ORTHO_NEAR, ORTHO_FAR].
-    // Изначально model_position.z был установлен на -5.0f, но если пользователь вводит вручную,
-    // мы не перезаписываем его. Здесь — только если текущий Z выбивается, подправим:
     if (current_projection == ProjectionType::ORTHOGRAPHIC) {
         if (model_position.z < ORTHO_NEAR) model_position.z = ORTHO_NEAR + 0.1f;
         if (model_position.z > ORTHO_FAR) model_position.z = ORTHO_FAR - 0.1f;
@@ -762,7 +738,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 				float(veekay::app.window_width) / float(veekay::app.window_height),
 				camera_near_plane, camera_far_plane),
 
-			// Применяем финальную трансформацию
+		
 			.transform = final_transform,
 
 			.color = model_color,
