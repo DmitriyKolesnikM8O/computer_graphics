@@ -71,7 +71,6 @@ struct VulkanBuffer {
 	VkBuffer buffer;
 	VkDeviceMemory memory;
 };
-// -----------------------------------------------------------------------------
 
 // --- ГЛОБАЛЬНЫЕ КОНСТАНТЫ И ПЕРЕМЕННЫЕ ЛАБОРАТОРНОЙ ---
 constexpr float camera_fov = 70.0f;
@@ -110,6 +109,7 @@ float cylinder_tilt = 0.3f;
 // Vulkan Buffers and Modules
 VkShaderModule vertex_shader_module;
 VkShaderModule fragment_shader_module;
+
 VkPipelineLayout pipeline_layout;
 VkPipeline pipeline;
 
@@ -150,6 +150,7 @@ Matrix orthographic(float scale, float aspect_ratio, float near_z, float far_z) 
 
 	return result;
 }
+
 
 // Выбирает проекцию: ортографическая или перспективная
 Matrix projection(float fov, float aspect_ratio, float near, float far) {
@@ -197,6 +198,7 @@ Matrix rotation(Vector axis, float angle) {
 	float cosa = cosf(angle);
 	float cosv = 1.0f - cosa;
 
+	//Формула Родригеса
 	result.m[0][0] = (axis.x * axis.x * cosv) + cosa;
 	result.m[0][1] = (axis.x * axis.y * cosv) + (axis.z * sina);
 	result.m[0][2] = (axis.x * axis.z * cosv) - (axis.y * sina);
@@ -337,25 +339,45 @@ void destroyBuffer(const VulkanBuffer& buffer) {
 	vkDestroyBuffer(device, buffer.buffer, nullptr);
 }
 
-
+/*
+    - vertices - сюда запишем сгенерированные координаты вершин цилиндра
+    - indices - сюда запишем индексы, которые определят, как вершины из vertices
+    будут объединены в треугольники
+    - radius - радиус основания цилиндра
+    - height - высота (вдоль Y)
+    - segments - количество полигональных сегментов
+*/
 void generateCylinder(std::vector<Vertex>& vertices, std::vector<uint32_t>& indices, float radius, float height, int segments) {
 	vertices.clear();
 	indices.clear();
 
-	// Вершины
+	/*
+		Вершины
+		параметрическое уравнение окружности для
+		горизонтальных координат + добавляем вертикальные
+		для пар "вверх - низ"
+	*/
 	for (int i = 0; i < segments; ++i) {
 		float angle = (float)i / segments * 2.0f * (float)M_PI;
 		float x = radius * cosf(angle);
 		float z = radius * sinf(angle);
 
+		//каждая пара - вертикальная линия на боковой поверхности
 		vertices.push_back({{x, -height / 2.0f, z}});
 		vertices.push_back({{x, height / 2.0f, z}});
 	}
 
-	// Индексы для боковой поверхности (Triangle List)
+	/*
+		Индексы для боковой поверхности (Triangle List)
+		Обшиваем скелет полигонами
+	*/
 	for (int i = 0; i < segments; ++i) {
+
+		//первая линия
 		uint32_t i0 = i * 2;
 		uint32_t i1 = i * 2 + 1;
+
+		//вторая линия
 		uint32_t i2 = ((i + 1) % segments) * 2;
 		uint32_t i3 = ((i + 1) % segments) * 2 + 1;
 		
@@ -369,11 +391,12 @@ void generateCylinder(std::vector<Vertex>& vertices, std::vector<uint32_t>& indi
 	}
 }
 
-
 void initialize() {
 	VkDevice& device = veekay::app.vk_device;
 
 	{ // NOTE: Build graphics pipeline
+
+		// вершинный шейдер (расположение модели в пространстве)
 		vertex_shader_module = loadShaderModule("./shaders/shader.vert.spv");
 		if (!vertex_shader_module) {
 			std::cerr << "Failed to load Vulkan vertex shader from file\n";
@@ -381,6 +404,7 @@ void initialize() {
 			return;
 		}
 
+		// фрагментный шейдер (раскраска)
 		fragment_shader_module = loadShaderModule("./shaders/shader.frag.spv");
 		if (!fragment_shader_module) {
 			std::cerr << "Failed to load Vulkan fragment shader from file\n";
@@ -445,8 +469,9 @@ void initialize() {
 		VkPipelineRasterizationStateCreateInfo raster_info{
 			.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
 			.polygonMode = VK_POLYGON_MODE_FILL,
-			.cullMode = VK_CULL_MODE_BACK_BIT,
-			.frontFace = VK_FRONT_FACE_CLOCKWISE,
+			.cullMode = VK_CULL_MODE_BACK_BIT, // только лицевая сторона
+			// .cullMode = VK_CULL_MODE_NONE,
+			.frontFace = VK_FRONT_FACE_CLOCKWISE, // это считаем лицом (вершины по часовой стрелке)
 			.lineWidth = 1.0f,
 		};
 
@@ -458,6 +483,8 @@ void initialize() {
 			.minSampleShading = 1.0f,
 		};
 
+		// в какую часть окна отрисовывать финальное изображение
+		// преобразуем координаты
 		VkViewport viewport{
 			.x = 0.0f,
 			.y = 0.0f,
@@ -467,6 +494,7 @@ void initialize() {
 			.maxDepth = 1.0f,
 		};
 
+		// отсекаем ненужные пиксели
 		VkRect2D scissor{
 			.offset = {0, 0},
 			.extent = {veekay::app.window_width, veekay::app.window_height},
@@ -511,6 +539,7 @@ void initialize() {
 		};
 
 		// NOTE: Declare constant memory region visible to vertex and fragment shaders
+		// Способ передачи маленьких данных с CPU на GPU
 		VkPushConstantRange push_constants{
 			.stageFlags = VK_SHADER_STAGE_VERTEX_BIT |
 			              VK_SHADER_STAGE_FRAGMENT_BIT,
