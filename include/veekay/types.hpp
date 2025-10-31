@@ -232,6 +232,11 @@ union vec3 {
 		vec3 result = vector;
 
 		float len = length(vector);
+		
+		
+		if (len < 1e-6) {
+			return {0.0f, 0.0f, 0.0f}; 
+		}
 
 		result.x /= len;
 		result.y /= len;
@@ -399,6 +404,52 @@ union mat4 {
 
 		return result;
 	}
+
+
+
+
+
+	static mat4 look_at(vec3 position, vec3 target, vec3 up) {
+		// 1. Z (Forward - от позиции к цели)
+		// <--- ИЗМЕНЕНИЕ: target - position
+		vec3 z_axis = veekay::vec3::normalized(target - position); 
+
+		// 2. X (Right)
+		vec3 x_axis = veekay::vec3::normalized(veekay::vec3::cross(up, z_axis));
+
+		// 3. Y (Up)
+		vec3 y_axis = veekay::vec3::cross(z_axis, x_axis); // Y = Z x X
+
+		mat4 result{}; 
+
+		// Строка 0 (X-axis)
+		result[0][0] = x_axis.x;
+		result[0][1] = x_axis.y;
+		result[0][2] = x_axis.z;
+
+		// Строка 1 (Y-axis)
+		result[1][0] = y_axis.x;
+		result[1][1] = y_axis.y;
+		result[1][2] = y_axis.z;
+
+		// Строка 2 (Z-axis). ИСПОЛЬЗУЕМ ИНВЕРТИРОВАННУЮ Z_FORWARD (т.е. Z_BACKWARD)
+		// Это стандарт для View Matrix в Vulkan.
+		result[2][0] = -z_axis.x; // <--- ИНВЕРСИЯ
+		result[2][1] = -z_axis.y; // <--- ИНВЕРСИЯ
+		result[2][2] = -z_axis.z; // <--- ИНВЕРСИЯ
+		
+		// Строка 3 (Трансляция). Используем Z_FORWARD
+		result[3][0] = -veekay::vec3::dot(x_axis, position);
+		result[3][1] = -veekay::vec3::dot(y_axis, position);
+		result[3][2] = -veekay::vec3::dot(z_axis, position); // <--- ВАЖНО: dot с Z_FORWARD
+		result[3][3] = 1.0f; 
+
+		return result;
+	}
+
+
+
+
 
 	static mat4 transpose(const mat4& matrix) {
 		mat4 result{};

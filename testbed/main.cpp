@@ -8,12 +8,16 @@
 
 #define _USE_MATH_DEFINES
 #include <math.h>
-
+#include <cmath>
 #include <veekay/veekay.hpp>
 
 #include <imgui.h>
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
+
+constexpr float PI = 3.14159265359f;
+inline float to_radians(float degrees) { return degrees * (PI / 180.0f); }
+inline float to_degrees(float radians) { return radians * (180.0f / PI); }
 
 namespace {
 
@@ -79,6 +83,10 @@ struct Camera {
 
 	veekay::mat4 view() const;
 	veekay::mat4 view_projection(float aspect_ratio) const;
+
+
+    veekay::vec3 target = {0.0f, -0.5f, 0.0f};
+    bool is_look_at = false;
 };
 
 struct AmbientLight {
@@ -101,6 +109,14 @@ struct PointLight {
 	float _pad;
 };
 
+struct SpotLight {
+	veekay::vec3 position = {0.0f, 2.0f, 0.0f};
+	veekay::vec3 direction = {0.0f, -1.0f, 0.0f}; // Направление конуса
+	veekay::vec3 color = {1.0f, 1.0f, 1.0f};
+	float inner_cutOff = 12.5f; // Угол конуса (в градусах)
+	float outer_cutOff = 17.5f;
+};
+
 struct LightSSBO {
 	PointLight point_lights[max_point_lights];
 	uint32_t point_light_count = 0;
@@ -117,6 +133,8 @@ inline namespace {
 	AmbientLight ambient_light;
 	DirectionalLight directional_light;
 	LightSSBO light_ssbo;
+
+    SpotLight spot_light;
 }
 
 inline namespace {
@@ -158,6 +176,13 @@ veekay::mat4 Transform::matrix() const {
 }
 
 veekay::mat4 Camera::view() const {
+    if (is_look_at) {
+        
+        return veekay::mat4::look_at(position, target, {0.0f, 1.0f, 0.0f});
+    }
+
+
+
 	auto t = veekay::mat4::translation(-position);
 	auto rx = veekay::mat4::rotation({1,0,0}, toRadians(-rotation.x));
 	auto ry = veekay::mat4::rotation({0,1,0}, toRadians(-rotation.y));
@@ -358,7 +383,7 @@ void initialize(VkCommandBuffer cmd) {
 
 	VkPushConstantRange push_range{
 		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		.size = 64
+		.size = 128
 	};
 
 	VkPipelineLayoutCreateInfo layout_info{
@@ -561,6 +586,7 @@ void shutdown() {
 }
 
 void update(double time) {
+    // --- LIGHTING UI (Остается без изменений) ---
     ImGui::Begin("Lighting");
 
     ImGui::Text("Ambient");
@@ -568,7 +594,8 @@ void update(double time) {
 
     ImGui::Separator();
     ImGui::Text("Directional");
-    ImGui::DragFloat3("Dir", &directional_light.direction.x, 0.01f);
+    ImGui::SliderFloat3("Dir", &directional_light.direction.x, -1.0f, 1.0f); 
+    directional_light.direction = veekay::vec3::normalized(directional_light.direction);
     ImGui::ColorEdit3("Color##Dir", &directional_light.color.x);
 
     ImGui::Separator();
@@ -577,43 +604,86 @@ void update(double time) {
 
     // Point Light 0
     ImGui::PushID(0);
-    ImGui::DragFloat3("Pos##0", &light_ssbo.point_lights[0].position.x, 0.05f);
+    ImGui::SliderFloat3("Pos##0", &light_ssbo.point_lights[0].position.x, -5.0f, 5.0f); 
     ImGui::ColorEdit3("Color##0", &light_ssbo.point_lights[0].color.x);
-    ImGui::DragFloat("Const##0", &light_ssbo.point_lights[0].constant, 0.01f, 0.0f, 2.0f);
-    ImGui::DragFloat("Lin##0", &light_ssbo.point_lights[0].linear, 0.001f, 0.0f, 1.0f);
-    ImGui::DragFloat("Quad##0", &light_ssbo.point_lights[0].quadratic, 0.001f, 0.0f, 1.0f);
+    ImGui::SliderFloat("Const##0", &light_ssbo.point_lights[0].constant, 0.0f, 2.0f);
+    ImGui::SliderFloat("Lin##0", &light_ssbo.point_lights[0].linear, 0.0f, 1.0f);
+    ImGui::SliderFloat("Quad##0", &light_ssbo.point_lights[0].quadratic, 0.0f, 1.0f);
     ImGui::PopID();
 
     // Point Light 1
     ImGui::PushID(1);
-    ImGui::DragFloat3("Pos##1", &light_ssbo.point_lights[1].position.x, 0.05f);
+    ImGui::SliderFloat3("Pos##1", &light_ssbo.point_lights[1].position.x, -5.0f, 5.0f); 
     ImGui::ColorEdit3("Color##1", &light_ssbo.point_lights[1].color.x);
-    ImGui::DragFloat("Const##1", &light_ssbo.point_lights[1].constant, 0.01f, 0.0f, 2.0f);
-    ImGui::DragFloat("Lin##1", &light_ssbo.point_lights[1].linear, 0.001f, 0.0f, 1.0f);
-    ImGui::DragFloat("Quad##1", &light_ssbo.point_lights[1].quadratic, 0.001f, 0.0f, 1.0f);
+    ImGui::SliderFloat("Const##1", &light_ssbo.point_lights[1].constant, 0.0f, 2.0f);
+    ImGui::SliderFloat("Lin##1", &light_ssbo.point_lights[1].linear, 0.0f, 1.0f);
+    ImGui::SliderFloat("Quad##1", &light_ssbo.point_lights[1].quadratic, 0.0f, 1.0f);
     ImGui::PopID();
+
+    // Spot Light UI
+    ImGui::Separator();
+    ImGui::Text("Spot Light");
+    ImGui::SliderFloat3("Pos##Spot", &spot_light.position.x, -5.0f, 5.0f); 
+    ImGui::SliderFloat3("Dir##Spot", &spot_light.direction.x, -1.0f, 1.0f); 
+    spot_light.direction = veekay::vec3::normalized(spot_light.direction);
+    ImGui::ColorEdit3("Color##Spot", &spot_light.color.x);
+    ImGui::SliderFloat("Inner CutOff (Deg)", &spot_light.inner_cutOff, 0.0f, 45.0f);
+    ImGui::SliderFloat("Outer CutOff (Deg)", &spot_light.outer_cutOff, 0.0f, 45.0f);
 
     ImGui::End();
 
-    // КОПИРУЕМ SSBO В GPU КАЖДЫЙ КАДР
+    // КОПИРУЕМ SSBO В GPU
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
+
+    // --- CAMERA UI ---
+    ImGui::Begin("Camera"); 
+
+    bool old_mode = camera.is_look_at;
+    ImGui::Checkbox("Use Look-At Mode", &camera.is_look_at);
+
+    // --- УПРОЩЕННАЯ ЛОГИКА СОХРАНЕНИЯ СОСТОЯНИЯ (СБРОС ВРАЩЕНИЯ) ---
+    // Убираем сложную тригонометрию, которая вызывала "хуйню".
+    if (old_mode != camera.is_look_at) {
+        // Если перешли обратно в Transformation Mode, сбрасываем вращение
+        // Это предотвратит скачок, используя известное состояние (0, 0, 0).
+        if (!camera.is_look_at) {
+             camera.rotation = {0.0f, 0.0f, 0.0f}; 
+        }
+    }
+
+    // Если Look-At активен, показать цель
+    if (camera.is_look_at) {
+        ImGui::Text("Look-At Target");
+        ImGui::SliderFloat3("Target Pos", &camera.target.x, -5.0f, 5.0f); 
+    } else {
+         // В режиме Трансформации можно показать текущие углы
+        ImGui::Text("Rotation (Euler)");
+        ImGui::Text("Pitch: %.2f, Yaw: %.2f", camera.rotation.x, camera.rotation.y);
+    }
+    
+    ImGui::End();
 
     // БЛОКИРУЕМ КАМЕРУ, КОГДА ImGui АКТИВНО
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
-        return; // не трогаем камеру
+        return;
     }
 
-    // --- КАМЕРА ---
-    if (veekay::input::mouse::isButtonDown(veekay::input::mouse::Button::left)) {
+    // --- КАМЕРА (ЛОГИКА УПРАВЛЕНИЯ, ОСТАЕТСЯ ПРЕЖНЕЙ) ---
+    
+    // Вращение (только в режиме Трансформации)
+    if (!camera.is_look_at && veekay::input::mouse::isButtonDown(veekay::input::mouse::Button::left)) {
         auto delta = veekay::input::mouse::cursorDelta();
         camera.rotation.y -= delta.x * 0.15f;
         camera.rotation.x -= delta.y * 0.15f;
         camera.rotation.x = std::clamp(camera.rotation.x, -89.0f, 89.0f);
     }
 
+    // Движение (работает в обоих режимах)
     veekay::mat4 view = camera.view();
-    veekay::vec3 front = veekay::vec3::normalized({ -view[0][2], -view[1][2], -view[2][2] });
+    // Извлекаем Right и Front векторы из View Matrix
     veekay::vec3 right = veekay::vec3::normalized({ view[0][0], view[1][0], view[2][0] });
+    // Front инвертирован, т.к. view matrix создана для Right-Handed System (Vulkan)
+    veekay::vec3 front = veekay::vec3::normalized({ -view[0][2], -view[1][2], -view[2][2] }); 
 
     float speed = 0.05f;
     if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::w)) camera.position += front * speed;
@@ -683,14 +753,35 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		uint32_t dyn_offset = i * sizeof(ModelUniforms);
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
 
-		struct Push { veekay::vec3 cam; float _p0; veekay::vec3 amb; float _p1; veekay::vec3 dir; float _p2; veekay::vec3 dcol; float _p3; };
+		struct Push { 
+            veekay::vec3 cam; float _p0; 
+            veekay::vec3 amb; float _p1; 
+            veekay::vec3 dir; float _p2; 
+            veekay::vec3 dcol; float _p3; 
+            
+            // Spot Light Data (НОВЫЕ ПОЛЯ)
+            veekay::vec3 s_pos; float _s_p0;
+            veekay::vec3 s_dir; float _s_p1;
+            veekay::vec3 s_col; float _s_p2;
+            float s_inner;
+            float s_outer;
+            float _s_p3;
+            float _s_p4;
+        };
 		Push push = {
-			camera.position, 0,
-			ambient_light.color, 0,
-			directional_light.direction, 0,
-			directional_light.color, 0
-		};
-		vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
+            camera.position, 0,
+            ambient_light.color, 0,
+            directional_light.direction, 0,
+            directional_light.color, 0,
+            // НОВЫЕ ДАННЫЕ
+            spot_light.position, 0,
+            spot_light.direction, 0,
+            spot_light.color, 0,
+            (float)cos(toRadians(spot_light.inner_cutOff)), // передаем косинусы
+            (float)cos(toRadians(spot_light.outer_cutOff)),
+            0, 0
+        };
+        vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
 
 		vkCmdDrawIndexed(cmd, mesh.indices, 1, 0, 0, 0);
 	}
