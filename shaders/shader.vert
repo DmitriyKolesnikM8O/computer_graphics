@@ -15,6 +15,9 @@ layout (binding = 0, std140) uniform SceneUniforms {
 layout (binding = 1, std140) uniform ModelUniforms {
 	mat4 model;
 	vec3 albedo_color;
+	float shininess;      // <-- Добавлено
+	vec3 specular_color;  // <-- Добавлено
+	float _pad;           // <-- Добавлено
 };
 
 void main() {
