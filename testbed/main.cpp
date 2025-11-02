@@ -138,11 +138,17 @@ inline namespace {
 }
 
 inline namespace {
+	// обертка вокруг SPIR-V кода. Просто ресурс, который подключаю к конвейеру 
 	VkShaderModule vertex_shader_module;
 	VkShaderModule fragment_shader_module;
 
+	// фабрика для создания реальных наборов дескрипторов
 	VkDescriptorPool descriptor_pool;
+
+	// описание всей структуры данных, которую ожидает шейдер: UBO, Dynamic UBO и SSBO
 	VkDescriptorSetLayout descriptor_set_layout;
+
+	// таблица ссылок для шейдера (реальные указатели на буферы в памяти)
 	VkDescriptorSet descriptor_set;
 
 	VkPipelineLayout pipeline_layout;
@@ -176,12 +182,9 @@ veekay::mat4 Transform::matrix() const {
 }
 
 veekay::mat4 Camera::view() const {
-    if (is_look_at) {
-        
+    if (is_look_at) {        
         return veekay::mat4::look_at(position, target, {0.0f, 1.0f, 0.0f});
     }
-
-
 
 	auto t = veekay::mat4::translation(-position);
 	auto rx = veekay::mat4::rotation({1,0,0}, toRadians(-rotation.x));
@@ -220,6 +223,7 @@ VkShaderModule loadShaderModule(const char* path) {
 void initialize(VkCommandBuffer cmd) {
 	VkDevice& device = veekay::app.vk_device;
 
+	// загружаем не GLSL-код, а SPIR-V (бинарный, платформонезависимый промежуточный код)
 	vertex_shader_module = loadShaderModule("./shaders/shader.vert.spv");
 	if (!vertex_shader_module) {
 		std::cerr << "Failed to load Vulkan vertex shader from file\n";
@@ -249,15 +253,20 @@ void initialize(VkCommandBuffer cmd) {
 		}
 	};
 
+	// данные для вершин
 	VkVertexInputBindingDescription buffer_binding{
-		.binding = 0,
-		.stride = sizeof(Vertex),
+		.binding = 0, // идут одним потоком
+		.stride = sizeof(Vertex), // размер одного пакета данных
 		.inputRate = VK_VERTEX_INPUT_RATE_VERTEX,
 	};
 
+	// внутри пакета данных
 	VkVertexInputAttributeDescription attributes[] = {
+		// 3 VK_FORMAT_R32G32B32_SFLOAT со смещением offsetof(Vertex, position)
 		{ .location = 0, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex, position) },
+		// 3 float'а со смещением offsetof(Vertex, normal)
 		{ .location = 1, .binding = 0, .format = VK_FORMAT_R32G32B32_SFLOAT, .offset = offsetof(Vertex, normal) },
+		// 2 float'а со смещением offsetof(Vertex, uv)
 		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, uv) },
 	};
 
@@ -274,10 +283,11 @@ void initialize(VkCommandBuffer cmd) {
 		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
 	};
 
+	// настраиваем растеризацию
 	VkPipelineRasterizationStateCreateInfo raster_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-		.polygonMode = VK_POLYGON_MODE_FILL,
-		.cullMode = VK_CULL_MODE_BACK_BIT,
+		.polygonMode = VK_POLYGON_MODE_FILL, //сплошным цветом заливаем
+		.cullMode = VK_CULL_MODE_BACK_BIT, //не рисуй треугольники, которые повернуты задней стороной
 		.frontFace = VK_FRONT_FACE_CLOCKWISE,
 		.lineWidth = 1.0f,
 	};
@@ -308,18 +318,19 @@ void initialize(VkCommandBuffer cmd) {
 
 	VkPipelineDepthStencilStateCreateInfo depth_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable = true,
-		.depthWriteEnable = true,
-		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+		.depthTestEnable = true, // включаем тест глубины
+		.depthWriteEnable = true, // разрешаем записывать новые значения глубины в буфер глубины
+		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL, // пиксель будет нарисован, только если его глубина меньше или равна глубине уже нарисованного пикселя в этой точке
 	};
 
 	VkPipelineColorBlendAttachmentState attachment_info{
 		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 	};
 
+	// настраиваем смешение
 	VkPipelineColorBlendStateCreateInfo blend_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-		.logicOpEnable = false,
+		.logicOpEnable = false, //отключен, то есть просто перезаписывается цвет
 		.attachmentCount = 1,
 		.pAttachments = &attachment_info
 	};
@@ -347,6 +358,7 @@ void initialize(VkCommandBuffer cmd) {
 	}
 
 	{
+		// В шейдерах будет ресурс в binding = 0. Это будет UNIFORM_BUFFER. Он будет один (descriptorCount = 1). Доступ к нему нужен и в вершинном, и во фрагментном шейдере
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
 			{ 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
@@ -403,13 +415,13 @@ void initialize(VkCommandBuffer cmd) {
 	VkGraphicsPipelineCreateInfo info{
 		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
 		.stageCount = 2,
-		.pStages = stage_infos,
-		.pVertexInputState = &input_state_info,
+		.pStages = stage_infos, // будут использоваться 2 шейдерные программы (vertex_shader_module и fragment_shader_module)
+		.pVertexInputState = &input_state_info, // связываемся с шейдеров
 		.pInputAssemblyState = &assembly_state_info,
 		.pViewportState = &viewport_info,
-		.pRasterizationState = &raster_info,
+		.pRasterizationState = &raster_info, // настройки растеризации
 		.pMultisampleState = &sample_info,
-		.pDepthStencilState = &depth_info,
+		.pDepthStencilState = &depth_info, // настраиваем глубину
 		.pColorBlendState = &blend_info,
 		.layout = pipeline_layout,
 		.renderPass = veekay::app.vk_render_pass,
@@ -428,10 +440,12 @@ void initialize(VkCommandBuffer cmd) {
 		max_models * sizeof(ModelUniforms), nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 	light_ssbo_buffer = new veekay::graphics::Buffer(
-		sizeof(LightSSBO), nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+		sizeof(LightSSBO), nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); // подсказка драйверу, что что буфер может быть большим и к нему будут обращаться их шейдера
     light_ssbo.point_lights[0] = { {2.0f, 1.0f, 0.0f}, 0.0f, {1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0.14f, 0.07f };
     light_ssbo.point_lights[1] = { {-2.0f, 1.0f, 0.0f}, 0.0f, {0.0f, 1.0f, 0.0f}, 0.0f, 1.0f, 0.14f, 0.07f };
     light_ssbo.point_light_count = 2;
+
+	// синхронизация с GPU
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
 	{
 		VkSamplerCreateInfo info{
@@ -462,10 +476,12 @@ void initialize(VkCommandBuffer cmd) {
 			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer_infos[2] }
 		};
 
+		// В binding = 0 этого Set'а запиши указатель на scene_uniforms_buffer
 		vkUpdateDescriptorSets(device, 3, write_infos, 0, nullptr);
 	}
 
 	{
+		// вершины для треугольника
 		std::vector<Vertex> vertices = {
 			{{-5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
 			{{5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
@@ -475,6 +491,8 @@ void initialize(VkCommandBuffer cmd) {
 
 		std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
 
+		// Сюда копирую данные (в память GPU)
+		// VK_BUFFER_USAGE_VERTEX_BUFFER_BIT - использовать кусок памяти под хранение вершин
 		plane_mesh.vertex_buffer = new veekay::graphics::Buffer(
 			vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
 
@@ -585,8 +603,8 @@ void shutdown() {
 	vkDestroyShaderModule(device, vertex_shader_module, nullptr);
 }
 
+// работа CPU
 void update(double time) {
-    // --- LIGHTING UI (Остается без изменений) ---
     ImGui::Begin("Lighting");
 
     ImGui::Text("Ambient");
@@ -632,45 +650,37 @@ void update(double time) {
 
     ImGui::End();
 
-    // КОПИРУЕМ SSBO В GPU
+    // КОПИРУЕМ SSBO В GPU (синхронизация с GPU)
+	// mapped_region - указатель типа void* на область памяти
+	// Эта память "видна" и CPU, и GPU (с помощью флага VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT)
+	// просто копируем байты из структуры в этот участок памяти
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
 
-    // --- CAMERA UI ---
     ImGui::Begin("Camera"); 
 
     bool old_mode = camera.is_look_at;
     ImGui::Checkbox("Use Look-At Mode", &camera.is_look_at);
 
-    // --- УПРОЩЕННАЯ ЛОГИКА СОХРАНЕНИЯ СОСТОЯНИЯ (СБРОС ВРАЩЕНИЯ) ---
-    // Убираем сложную тригонометрию, которая вызывала "хуйню".
     if (old_mode != camera.is_look_at) {
-        // Если перешли обратно в Transformation Mode, сбрасываем вращение
-        // Это предотвратит скачок, используя известное состояние (0, 0, 0).
         if (!camera.is_look_at) {
              camera.rotation = {0.0f, 0.0f, 0.0f}; 
         }
     }
 
-    // Если Look-At активен, показать цель
     if (camera.is_look_at) {
         ImGui::Text("Look-At Target");
         ImGui::SliderFloat3("Target Pos", &camera.target.x, -5.0f, 5.0f); 
     } else {
-         // В режиме Трансформации можно показать текущие углы
         ImGui::Text("Rotation (Euler)");
         ImGui::Text("Pitch: %.2f, Yaw: %.2f", camera.rotation.x, camera.rotation.y);
     }
     
     ImGui::End();
 
-    // БЛОКИРУЕМ КАМЕРУ, КОГДА ImGui АКТИВНО
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
         return;
     }
-
-    // --- КАМЕРА (ЛОГИКА УПРАВЛЕНИЯ, ОСТАЕТСЯ ПРЕЖНЕЙ) ---
     
-    // Вращение (только в режиме Трансформации)
     if (!camera.is_look_at && veekay::input::mouse::isButtonDown(veekay::input::mouse::Button::left)) {
         auto delta = veekay::input::mouse::cursorDelta();
         camera.rotation.y -= delta.x * 0.15f;
@@ -678,11 +688,8 @@ void update(double time) {
         camera.rotation.x = std::clamp(camera.rotation.x, -89.0f, 89.0f);
     }
 
-    // Движение (работает в обоих режимах)
     veekay::mat4 view = camera.view();
-    // Извлекаем Right и Front векторы из View Matrix
     veekay::vec3 right = veekay::vec3::normalized({ view[0][0], view[1][0], view[2][0] });
-    // Front инвертирован, т.к. view matrix создана для Right-Handed System (Vulkan)
     veekay::vec3 front = veekay::vec3::normalized({ -view[0][2], -view[1][2], -view[2][2] }); 
 
     float speed = 0.05f;
@@ -693,28 +700,31 @@ void update(double time) {
     if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::q)) camera.position.y += speed;
     if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::z)) camera.position.y -= speed;
 
-    // --- UNIFORMS ---
     float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
     *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
 
+	// создаем временный вектор в RAM
     std::vector<ModelUniforms> mu(models.size());
+	// копируем данные из вектора models во временный
     for (size_t i = 0; i < models.size(); ++i) {
         mu[i].model = models[i].transform.matrix();
         mu[i].albedo_color = models[i].material.albedo;
         mu[i].specular_color = models[i].material.specular;
         mu[i].shininess = models[i].material.shininess;
     }
+	// копируем из временного байт в байт по адресу, куда mapped_region указывает
     std::copy(mu.begin(), mu.end(), (ModelUniforms*)model_uniforms_buffer->mapped_region);
 }
 
+//записываем последовательность команд в cmd
 void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
-	vkResetCommandBuffer(cmd, 0);
+	vkResetCommandBuffer(cmd, 0); // очистка
 
 	VkCommandBufferBeginInfo begin_info{
 		.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+		.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, // используем буфер только 1 раз, потом перезапишем
 	};
-	vkBeginCommandBuffer(cmd, &begin_info);
+	vkBeginCommandBuffer(cmd, &begin_info); // начало записи
 
 	VkClearValue clear_color{.color = {{0.1f, 0.1f, 0.1f, 1.0f}}};
 	VkClearValue clear_depth{.depthStencil = {1.0f, 0}};
@@ -728,8 +738,11 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		.clearValueCount = 2,
 		.pClearValues = clear_values,
 	};
+
+	// начать процесс рендеринга
 	vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
 
+	// теперь знаем, какие шейдеры использовать, как рисовать треугольники и так далее
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 	VkDeviceSize zero_offset = 0;
 
@@ -742,15 +755,24 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 
 		if (current_vertex_buffer != mesh.vertex_buffer->buffer) {
 			current_vertex_buffer = mesh.vertex_buffer->buffer;
+
+			//Для binding = 0 во входных данных вершин использовать вот этот vertex_buffer
 			vkCmdBindVertexBuffers(cmd, 0, 1, &current_vertex_buffer, &zero_offset);
 		}
 
 		if (current_index_buffer != mesh.index_buffer->buffer) {
 			current_index_buffer = mesh.index_buffer->buffer;
+
+			//Вершины нужно соединять в треугольники согласно индексам из вот этого index_buffer
 			vkCmdBindIndexBuffer(cmd, current_index_buffer, zero_offset, VK_INDEX_TYPE_UINT32);
 		}
 
 		uint32_t dyn_offset = i * sizeof(ModelUniforms);
+		
+		// говорим GPU, какую таблицу ссылок использовать (descriptor_set)
+		// шейдеры теперь знают, где искать view_projection, model, и массив point_lights
+		// dyn_offset - динамический UBO. Подключаем 1 большой model_uniforms_buffer, но для каждого объекта
+		// указываем смещение. GPU будет читать данные для i-го объекта, начиная с i * sizeof(ModelUniforms) байта в этом буфере
 		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
 
 		struct Push { 
@@ -759,7 +781,6 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
             veekay::vec3 dir; float _p2; 
             veekay::vec3 dcol; float _p3; 
             
-            // Spot Light Data (НОВЫЕ ПОЛЯ)
             veekay::vec3 s_pos; float _s_p0;
             veekay::vec3 s_dir; float _s_p1;
             veekay::vec3 s_col; float _s_p2;
@@ -773,7 +794,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
             ambient_light.color, 0,
             directional_light.direction, 0,
             directional_light.color, 0,
-            // НОВЫЕ ДАННЫЕ
+            
             spot_light.position, 0,
             spot_light.direction, 0,
             spot_light.color, 0,
@@ -781,8 +802,11 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
             (float)cos(toRadians(spot_light.outer_cutOff)),
             0, 0
         };
+
+		// самый быстрый способ передачи данных, минуя буферы, просто ложим в регистры GPU
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
 
+		// нарисуй объект, состоящий из mesh.indices вершин
 		vkCmdDrawIndexed(cmd, mesh.indices, 1, 0, 0, 0);
 	}
 

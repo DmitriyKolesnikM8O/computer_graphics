@@ -1,7 +1,8 @@
 #version 460
 
-layout(location=0) in vec3 f_position;
-layout(location=1) in vec3 f_normal;
+layout(location=0) in vec3 f_position; // сюда приходит интерполированная(промежут. значения на основе известных, в графике - заполнение между пикселями)
+                                       // позиция пикселя в мировых координатах 
+layout(location=1) in vec3 f_normal; // сюда приходит интерполированная нормаль
 layout(location=2) in vec2 f_uv;
 
 layout(set=0, binding=1) uniform ModelUniforms {
@@ -27,7 +28,6 @@ layout(set=0, binding=2) readonly buffer LightSSBO {
     vec3 _pad[3];
 } lights;
 
-// Измените размер Push Constants в C++ на 128 байт, если он еще не изменен
 layout(push_constant) uniform PushConstants {
     vec3 camera_position;
     float _p0;
@@ -40,14 +40,14 @@ layout(push_constant) uniform PushConstants {
 
     vec3 spot_pos;
     float _s_p0;
-    vec3 spot_dir; // Нормализованное направление конуса
+    vec3 spot_dir;
     float _s_p1;
     vec3 spot_col;
     float _s_p2;
     float inner_cutOff_cos; 
     float outer_cutOff_cos; 
-    float _s_p3; // Паддинг для выравнивания
-    float _s_p4; // Паддинг для выравнивания
+    float _s_p3;
+    float _s_p4;
 } pc;
 
 layout(location=0) out vec4 final_color;
@@ -65,55 +65,47 @@ vec3 calculate_spot_light(vec3 N, vec3 V) {
     
     if (dist == 0.0) return vec3(0.0);
     
-    // L: нормализованный вектор от ФРАГМЕНТА К ИСТОЧНИКУ
+    
     vec3 L = light_vec / dist;
     
-    // D: нормализованный вектор оси конуса ОТ ИСТОЧНИКА (pc.spot_dir)
     vec3 D = pc.spot_dir; 
     
-    // theta: косинус угла между лучом света (-L, ОТ ИСТОЧНИКА К ФРАГМЕНТУ) и осью конуса (D).
-    // Чем ближе к 1.0, тем ближе фрагмент к центру конуса.
     float theta = dot(-L, D); // ИСПОЛЬЗУЕМ -L
     
-    // Расчет Attenuation
     float constant = 1.0;
     float linear = 0.14; 
     float quadratic = 0.07;
     float attenuation = 1.0 / (constant + linear * dist + quadratic * dist * dist);
     
-    // Расчет конуса и гладкого края (Smooth Edge)
     float inner_cos = pc.inner_cutOff_cos;
     float outer_cos = pc.outer_cutOff_cos;
     float epsilon = inner_cos - outer_cos; 
     
     float intensity = 0.0;
     
-    // Проверка, что фрагмент находится внутри внешнего конуса (theta > outer_cos)
-    // Если theta <= outer_cos, интенсивность должна быть 0.0
     if (theta > outer_cos) {
         if (epsilon > 0.0001) {
-            // Гладкость (плавный спад)
             intensity = clamp((theta - outer_cos) / epsilon, 0.0, 1.0);
         } else {
-            // Резкий край (InnerCutOff == OuterCutOff)
             intensity = (theta >= inner_cos) ? 1.0 : 0.0;
         }
     }
-    
-    // Конечный расчет освещения
+
     return calculate_blinn_phong(N, V, L, pc.spot_col, attenuation * intensity);
 }
 
+// логика расчета цвета на основе модели Блинн-Фонга
 void main() {
     vec3 N = normalize(f_normal);
-    vec3 V = normalize(pc.camera_position - f_position);
-    vec3 color = pc.ambient_color * model.albedo_color;
+    vec3 V = normalize(pc.camera_position - f_position); // вычисляем вектор от точки к камере
+    vec3 color = pc.ambient_color * model.albedo_color; // добавляем фоновый цвет
 
-    // Directional light
+
     vec3 dir_light_dir = normalize(-pc.directional_dir);
-    color += calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0);
+    color += calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0); // добавляем направленный цвет
 
     // Point lights
+    // добавляем точечные цвета
     for (uint i = 0; i < lights.point_light_count; ++i) {
         vec3 light_vec = lights.point_lights[i].position - f_position;
         float dist = length(light_vec);
@@ -128,6 +120,6 @@ void main() {
         }
     }
 
-    color += calculate_spot_light(N, V);
-    final_color = vec4(color, 1.0);
+    color += calculate_spot_light(N, V); // добавляем прожекторный цвет
+    final_color = vec4(color, 1.0); // финальный цвет, который будет записан в пиксель на экране
 }

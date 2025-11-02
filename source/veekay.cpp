@@ -27,13 +27,23 @@ constexpr uint32_t max_frames_in_flight = 2;
 
 GLFWwindow* window;
 
+// контект всего приложения Vulkan (здесь расширения и слои валидации)
 VkInstance vk_instance;
 VkDebugUtilsMessengerEXT vk_debug_messenger;
-VkPhysicalDevice vk_physical_device;
-VkDevice vk_device;
-VkSurfaceKHR vk_surface;
 
+// перебор всех устройств в системе в поисках подходящего
+VkPhysicalDevice vk_physical_device;
+
+// логическое представление GPU, именно отсюда запрашиваю очереди команд, создаю все остальные объекты
+VkDevice vk_device;
+
+// Поверхность — это абстракция окна, в которое можно рисовать
+// Swapchain (цепочка смены кадров) — это набор из 2-3 изображений (фреймбуферов), в 
+// которые я рисую по очереди. Пока на экране показывается одно, я рисуете в другое. 
+// Это предотвращает "разрывы" кадра (tearing)
+VkSurfaceKHR vk_surface;
 VkSwapchainKHR vk_swapchain;
+
 VkFormat vk_swapchain_format;
 std::vector<VkImage> vk_swapchain_images;
 std::vector<VkImageView> vk_swapchain_image_views;
@@ -43,8 +53,14 @@ uint32_t vk_graphics_queue_family;
 
 // NOTE: ImGui rendering objects
 VkDescriptorPool imgui_descriptor_pool;
+
+// описание структуры рендеринга (один цветовой буфер, один буфер глубины)
 VkRenderPass imgui_render_pass;
+
+// командный пул
 VkCommandPool imgui_command_pool;
+
+// вектор командных буферов
 std::vector<VkCommandBuffer> imgui_command_buffers;
 std::vector<VkFramebuffer> imgui_framebuffers;
 
@@ -56,6 +72,9 @@ VkImageView vk_image_depth_view;
 VkRenderPass vk_render_pass;
 std::vector<VkFramebuffer> vk_framebuffers;
 
+// Семафоры и барьеры.
+// Объекты для синхронизации CPU и GPU. Например, 
+// "CPU не должен начинать записывать команды для следующего кадра, пока GPU не закончил рисовать предыдущий".
 std::vector<VkSemaphore> vk_render_semaphores;
 std::vector<VkSemaphore> vk_present_semaphores;
 std::vector<VkFence> vk_in_flight_fences;
@@ -648,6 +667,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			.pCommandBuffers = &onetime_command_buffer,
 		};
 
+		// отправляем командный буфер в очередь GPU
 		vkQueueSubmit(vk_graphics_queue, 1, &info, VK_NULL_HANDLE);
 		vkQueueWaitIdle(vk_graphics_queue);
 

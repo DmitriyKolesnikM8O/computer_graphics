@@ -20,6 +20,10 @@ Buffer::Buffer(size_t size, const void* data,
 			.sharingMode = VK_SHARING_MODE_EXCLUSIVE,
 		};
 
+		// На CPU создается "дескриптор" или "описатель" буфера. 
+		// Просто структура, "хочу зарезервировать в VRAM кусок памяти размером X байт,
+		// использовать его для хранения вершин (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT)". 
+		// GPU еще не выделил память.
 		if (vkCreateBuffer(device, &info, nullptr, &buffer) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to create Vulkan buffer");
 		}
@@ -56,10 +60,12 @@ Buffer::Buffer(size_t size, const void* data,
 			.memoryTypeIndex = index,
 		};
 
+		// находим подходящий тип памяти VRAM и выделяем его
 		if (vkAllocateMemory(device, &info, nullptr, &memory) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to allocate Vulkan buffer memory");
 		}
 
+		// Дескриптор буфера связывается с реальным куском выделенной VRAM. Теперь у нас есть буфер на GPU
 		if (vkBindBufferMemory(device, buffer, memory, 0) != VK_SUCCESS) {
 			throw std::runtime_error("Failed to bind Vulkan buffer memory");
 		}
