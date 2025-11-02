@@ -1,6 +1,6 @@
-#include "veekay/input.hpp"
 #include <cstdint>
 #include <climits>
+#include <cstring>
 #include <vector>
 #include <iostream>
 #include <fstream>
@@ -9,9 +9,9 @@
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <cmath>
+#include <imgui.h>
 #include <veekay/veekay.hpp>
 
-#include <imgui.h>
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
 
@@ -437,7 +437,9 @@ void initialize(VkCommandBuffer cmd) {
 		sizeof(SceneUniforms), nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 	model_uniforms_buffer = new veekay::graphics::Buffer(
-		max_models * sizeof(ModelUniforms), nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		max_models * veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms)),
+		nullptr,
+		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
 	light_ssbo_buffer = new veekay::graphics::Buffer(
 		sizeof(LightSSBO), nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); // подсказка драйверу, что что буфер может быть большим и к нему будут обращаться их шейдера
@@ -688,32 +690,17 @@ void update(double time) {
         camera.rotation.x = std::clamp(camera.rotation.x, -89.0f, 89.0f);
     }
 
-    veekay::mat4 view = camera.view();
-    veekay::vec3 right = veekay::vec3::normalized({ view[0][0], view[1][0], view[2][0] });
-    veekay::vec3 front = veekay::vec3::normalized({ -view[0][2], -view[1][2], -view[2][2] }); 
+	*(SceneUniforms*)scene_uniforms_buffer->mapped_region = scene_uniforms;
 
-    float speed = 0.05f;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::w)) camera.position += front * speed;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::s)) camera.position -= front * speed;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::d)) camera.position += right * speed;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::a)) camera.position -= right * speed;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::q)) camera.position.y += speed;
-    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::z)) camera.position.y -= speed;
+	const size_t alignment =
+		veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
 
-    float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
-    *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
+	for (size_t i = 0, n = model_uniforms.size(); i < n; ++i) {
+		const ModelUniforms& uniforms = model_uniforms[i];
 
-	// создаем временный вектор в RAM
-    std::vector<ModelUniforms> mu(models.size());
-	// копируем данные из вектора models во временный
-    for (size_t i = 0; i < models.size(); ++i) {
-        mu[i].model = models[i].transform.matrix();
-        mu[i].albedo_color = models[i].material.albedo;
-        mu[i].specular_color = models[i].material.specular;
-        mu[i].shininess = models[i].material.shininess;
-    }
-	// копируем из временного байт в байт по адресу, куда mapped_region указывает
-    std::copy(mu.begin(), mu.end(), (ModelUniforms*)model_uniforms_buffer->mapped_region);
+		char* const pointer = static_cast<char*>(model_uniforms_buffer->mapped_region) + i * alignment;
+		*reinterpret_cast<ModelUniforms*>(pointer) = uniforms;
+	}
 }
 
 //записываем последовательность команд в cmd
@@ -749,7 +736,10 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 	VkBuffer current_vertex_buffer = VK_NULL_HANDLE;
 	VkBuffer current_index_buffer = VK_NULL_HANDLE;
 
-	for (size_t i = 0; i < models.size(); ++i) {
+	const size_t model_uniorms_alignment =
+		veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
+
+	for (size_t i = 0, n = models.size(); i < n; ++i) {
 		const Model& model = models[i];
 		const Mesh& mesh = model.mesh;
 
@@ -767,13 +757,13 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 			vkCmdBindIndexBuffer(cmd, current_index_buffer, zero_offset, VK_INDEX_TYPE_UINT32);
 		}
 
-		uint32_t dyn_offset = i * sizeof(ModelUniforms);
-		
+		uint32_t offset = i * model_uniorms_alignment;
 		// говорим GPU, какую таблицу ссылок использовать (descriptor_set)
 		// шейдеры теперь знают, где искать view_projection, model, и массив point_lights
 		// dyn_offset - динамический UBO. Подключаем 1 большой model_uniforms_buffer, но для каждого объекта
 		// указываем смещение. GPU будет читать данные для i-го объекта, начиная с i * sizeof(ModelUniforms) байта в этом буфере
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
+		                    0, 1, &descriptor_set, 1, &offset);
 
 		struct Push { 
             veekay::vec3 cam; float _p0; 
