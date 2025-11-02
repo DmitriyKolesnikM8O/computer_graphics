@@ -1,17 +1,18 @@
+#include "veekay/input.hpp"
 #include <cstdint>
 #include <climits>
-#include <cstring>
 #include <vector>
 #include <iostream>
 #include <fstream>
 #include <algorithm>
+#include <cstring> // MERGE: Добавлено для memcpy
 
 #define _USE_MATH_DEFINES
 #include <math.h>
 #include <cmath>
-#include <imgui.h>
 #include <veekay/veekay.hpp>
 
+#include <imgui.h>
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
 
@@ -30,10 +31,12 @@ struct Vertex {
 	veekay::vec2 uv;
 };
 
+// глобальные данные для всей сцены
 struct SceneUniforms {
-	veekay::mat4 view_projection;
+	veekay::mat4 view_projection; // комбинированная матрица вида и проекции (где и под каким углом мы видим сцену)
 };
 
+// Внешний вид поверхности объекта
 struct Material {
 	veekay::vec3 albedo = {1.0f, 1.0f, 1.0f};
 	float _pad0;
@@ -41,6 +44,7 @@ struct Material {
 	float shininess = 32.0f;
 };
 
+// Как данные об одном объекте лежат в GPU
 struct ModelUniforms {
 	veekay::mat4 model;
 	veekay::vec3 albedo_color;
@@ -49,6 +53,7 @@ struct ModelUniforms {
 	float _pad;
 };
 
+// описываем геометрию объекта	
 struct Mesh {
 	veekay::graphics::Buffer* vertex_buffer;
 	veekay::graphics::Buffer* index_buffer;
@@ -63,6 +68,7 @@ struct Transform {
 	veekay::mat4 matrix() const;
 };
 
+// описываем один полноценный объект
 struct Model {
 	Mesh mesh;
 	Transform transform;
@@ -81,11 +87,11 @@ struct Camera {
 	float near_plane = default_near_plane;
 	float far_plane = default_far_plane;
 
-	veekay::mat4 view() const;
-	veekay::mat4 view_projection(float aspect_ratio) const;
+	veekay::mat4 view() const; // вычисляем и возвращаем матрицу вида
+	veekay::mat4 view_projection(float aspect_ratio) const; // матрица вида * матрицу проекции
 
 
-    veekay::vec3 target = {0.0f, -0.5f, 0.0f};
+    veekay::vec3 target = {0.0f, -0.5f, 0.0f}; // точка в пространстве, куда смотрит камера (только если включен is_look_at)
     bool is_look_at = false;
 };
 
@@ -118,8 +124,8 @@ struct SpotLight {
 };
 
 struct LightSSBO {
-	PointLight point_lights[max_point_lights];
-	uint32_t point_light_count = 0;
+	PointLight point_lights[max_point_lights]; // данные для каждого точечного источника света
+	uint32_t point_light_count = 0; // сколько из 8 источников реально используем
 	veekay::vec3 _pad[3];
 };
 
@@ -138,7 +144,7 @@ inline namespace {
 }
 
 inline namespace {
-	// обертка вокруг SPIR-V кода. Просто ресурс, который подключаю к конвейеру 
+	// обертка вокруг SPIR-V кода. Просто ресурс, который подключаю к конвейеру
 	VkShaderModule vertex_shader_module;
 	VkShaderModule fragment_shader_module;
 
@@ -151,17 +157,26 @@ inline namespace {
 	// таблица ссылок для шейдера (реальные указатели на буферы в памяти)
 	VkDescriptorSet descriptor_set;
 
+	// описание интерфейса между шейдерами и данными, передаваемыми из кода
 	VkPipelineLayout pipeline_layout;
+
+	// сконфигурированный графический конвейер
 	VkPipeline pipeline;
 
+	// хранит данные, общие для всей сцены (матрица view_projection)
 	veekay::graphics::Buffer* scene_uniforms_buffer;
+	// хранит данные, уникальные для каждого объекта (model и свойства)
 	veekay::graphics::Buffer* model_uniforms_buffer;
+	// массив данных о точечных источниках света
 	veekay::graphics::Buffer* light_ssbo_buffer;
 
+	// группируем вместе 2 указателя на буферы (vertex_buffer и index_buffer)
 	Mesh plane_mesh;
 	Mesh cube_mesh;
 
 	veekay::graphics::Texture* missing_texture;
+
+	// говорим шейдеру, как читать пиксели из любой структуры
 	VkSampler missing_texture_sampler;
 
 	veekay::graphics::Texture* texture;
@@ -172,6 +187,7 @@ float toRadians(float degrees) {
 	return degrees * float(M_PI) / 180.0f;
 }
 
+// вычисляем и возвращаем матрицу модели
 veekay::mat4 Transform::matrix() const {
 	auto t = veekay::mat4::translation(position);
 	auto s = veekay::mat4::scaling(scale);
@@ -182,10 +198,13 @@ veekay::mat4 Transform::matrix() const {
 }
 
 veekay::mat4 Camera::view() const {
-    if (is_look_at) {        
+	// доп задание
+    if (is_look_at) {
         return veekay::mat4::look_at(position, target, {0.0f, 1.0f, 0.0f});
     }
 
+	// вычисляем матрицу вида через обратные переносы и повороты
+	// camera.rotation меняется в update() на основе движения мыши
 	auto t = veekay::mat4::translation(-position);
 	auto rx = veekay::mat4::rotation({1,0,0}, toRadians(-rotation.x));
 	auto ry = veekay::mat4::rotation({0,1,0}, toRadians(-rotation.y));
@@ -209,11 +228,14 @@ VkShaderModule loadShaderModule(const char* path) {
 
 	VkShaderModuleCreateInfo info{
 		.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
-		.codeSize = size,
-		.pCode = buffer.data(),
+		.codeSize = size, // размер байт-кода шейдера
+		.pCode = buffer.data(), // указатель на байт код шейдера
 	};
 
 	VkShaderModule result;
+	// veekay::app.vk_device - логическое устройство GPU
+	// &info - указатель на VkShaderModuleCreateInfo (где инфа о шейдере)
+	// nullptr - указатель на аллокатор памяти (используем базовый)
 	if (vkCreateShaderModule(veekay::app.vk_device, &info, nullptr, &result) != VK_SUCCESS) {
 		return nullptr;
 	}
@@ -270,17 +292,19 @@ void initialize(VkCommandBuffer cmd) {
 		{ .location = 2, .binding = 0, .format = VK_FORMAT_R32G32_SFLOAT, .offset = offsetof(Vertex, uv) },
 	};
 
+	// описываем формат вершинных данных
 	VkPipelineVertexInputStateCreateInfo input_state_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-		.vertexBindingDescriptionCount = 1,
+		.vertexBindingDescriptionCount = 1, // 1 буфер для данных вершин
 		.pVertexBindingDescriptions = &buffer_binding,
-		.vertexAttributeDescriptionCount = 3,
+		.vertexAttributeDescriptionCount = 3, // у каждой вершины 3 атрибута
 		.pVertexAttributeDescriptions = attributes,
 	};
 
+	// как собирать вершины в примитивы
 	VkPipelineInputAssemblyStateCreateInfo assembly_state_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+		.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST, // берем вершины из буфера по 3 штуки и каждую тройку считаем независимым треугольником
 	};
 
 	// настраиваем растеризацию
@@ -292,11 +316,13 @@ void initialize(VkCommandBuffer cmd) {
 		.lineWidth = 1.0f,
 	};
 
+	// настраиваем мультисэмплинг
 	VkPipelineMultisampleStateCreateInfo sample_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT,
+		.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT, //выключен, юзаем 1 сэмпл на пиксель
 	};
 
+	// преобразование из нормализованных координат устройства в экранные координаты
 	VkViewport viewport{
 		.width = static_cast<float>(veekay::app.window_width),
 		.height = static_cast<float>(veekay::app.window_height),
@@ -304,26 +330,30 @@ void initialize(VkCommandBuffer cmd) {
 		.maxDepth = 1.0f,
 	};
 
+	// область отсечения
 	VkRect2D scissor{
 		.extent = {veekay::app.window_width, veekay::app.window_height},
 	};
 
+	// говорим растеризатору, как отображать финальные координаты на реальные пиксели окна
 	VkPipelineViewportStateCreateInfo viewport_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
 		.viewportCount = 1,
-		.pViewports = &viewport,
+		.pViewports = &viewport, // правило для трансформации координат
 		.scissorCount = 1,
 		.pScissors = &scissor,
 	};
 
 	VkPipelineDepthStencilStateCreateInfo depth_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-		.depthTestEnable = true, // включаем тест глубины
-		.depthWriteEnable = true, // разрешаем записывать новые значения глубины в буфер глубины
+		.depthTestEnable = true, 
+		.depthWriteEnable = true,
 		.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL, // пиксель будет нарисован, только если его глубина меньше или равна глубине уже нарисованного пикселя в этой точке
 	};
 
+	// как 1 цветовой буфер должен обрабатывать результат из фрагментного шейдера
 	VkPipelineColorBlendAttachmentState attachment_info{
+		// VK_COLOR_COMPONENT_R_BIT - разрешить в красный и ....
 		.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT,
 	};
 
@@ -336,6 +366,10 @@ void initialize(VkCommandBuffer cmd) {
 	};
 
 	{
+		/*
+			резервируем место под:
+				- 8 дескрипторов UNIFORM_BUFFER ...
+		*/
 		VkDescriptorPoolSize pools[] = {
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 },
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 8 },
@@ -343,6 +377,7 @@ void initialize(VkCommandBuffer cmd) {
 			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 }
 		};
 
+		// описываем конфигурацию пула дескрипторов
 		VkDescriptorPoolCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
 			.maxSets = 1,
@@ -350,6 +385,7 @@ void initialize(VkCommandBuffer cmd) {
 			.pPoolSizes = pools,
 		};
 
+		// выделяем внутри драйвера память под хранение запрошенных дескрипторов
 		if (vkCreateDescriptorPool(device, &info, nullptr, &descriptor_pool) != VK_SUCCESS) {
 			std::cerr << "Failed to create Vulkan descriptor pool\n";
 			veekay::app.running = false;
@@ -358,6 +394,7 @@ void initialize(VkCommandBuffer cmd) {
 	}
 
 	{
+		// массив, где каждый элемент описывает 1 ресурс, доступный шейдеру
 		// В шейдерах будет ресурс в binding = 0. Это будет UNIFORM_BUFFER. Он будет один (descriptorCount = 1). Доступ к нему нужен и в вершинном, и во фрагментном шейдере
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
@@ -365,12 +402,14 @@ void initialize(VkCommandBuffer cmd) {
 			{ 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT }
 		};
 
+		// описываем, как будет выглядеть 1 Descriptor Set
 		VkDescriptorSetLayoutCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
 			.bindingCount = 3,
 			.pBindings = bindings,
 		};
 
+		// создаем VkDescriptorSetLayout
 		if (vkCreateDescriptorSetLayout(device, &info, nullptr, &descriptor_set_layout) != VK_SUCCESS) {
 			std::cerr << "Failed to create Vulkan descriptor set layout\n";
 			veekay::app.running = false;
@@ -378,12 +417,13 @@ void initialize(VkCommandBuffer cmd) {
 		}
 	}
 
+	// создаем VkDescriptorSet (таблицу ссылок)
 	{
 		VkDescriptorSetAllocateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = descriptor_pool,
+			.descriptorPool = descriptor_pool, // из какого пула берем память
 			.descriptorSetCount = 1,
-			.pSetLayouts = &descriptor_set_layout,
+			.pSetLayouts = &descriptor_set_layout, // по какому шаблону создавать
 		};
 
 		if (vkAllocateDescriptorSets(device, &info, &descriptor_set) != VK_SUCCESS) {
@@ -398,14 +438,16 @@ void initialize(VkCommandBuffer cmd) {
 		.size = 128
 	};
 
+	// способы, которыми мы будем передавать данные в шейдеры (кроме вершинных атрибутов)
 	VkPipelineLayoutCreateInfo layout_info{
 		.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
-		.setLayoutCount = 1,
+		.setLayoutCount = 1, // 1 Description Set
 		.pSetLayouts = &descriptor_set_layout,
-		.pushConstantRangeCount = 1,
+		.pushConstantRangeCount = 1, // 1 блок push констант
 		.pPushConstantRanges = &push_range,
 	};
 
+	// создаем VkPipelineLayout (описывает все данные, которые шейдеры могут запросить)
 	if (vkCreatePipelineLayout(device, &layout_info, nullptr, &pipeline_layout) != VK_SUCCESS) {
 		std::cerr << "Failed to create Vulkan pipeline layout\n";
 		veekay::app.running = false;
@@ -433,26 +475,31 @@ void initialize(VkCommandBuffer cmd) {
 		return;
 	}
 
+	// создание экземпляра класса  экземпляра класса Buffer (создаем на GPU быстрый буфер 64 байта для хранения view_projection)
 	scene_uniforms_buffer = new veekay::graphics::Buffer(
 		sizeof(SceneUniforms), nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
+	// просим у VRAM кусок памяти для хранения информации о 1024 моделях (Dynamic Uniform Buffer)
 	model_uniforms_buffer = new veekay::graphics::Buffer(
 		max_models * veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms)),
-		nullptr,
-		VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
+		nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT); // будем использовать этот буфер как Uniform Buffer
 
+	// создание буферы для хранения массива точечных источников ( Storage Buffer)
 	light_ssbo_buffer = new veekay::graphics::Buffer(
 		sizeof(LightSSBO), nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT); // подсказка драйверу, что что буфер может быть большим и к нему будут обращаться их шейдера
+
+	// инициализируем 2 источника света
     light_ssbo.point_lights[0] = { {2.0f, 1.0f, 0.0f}, 0.0f, {1.0f, 0.0f, 0.0f}, 0.0f, 1.0f, 0.14f, 0.07f };
     light_ssbo.point_lights[1] = { {-2.0f, 1.0f, 0.0f}, 0.0f, {0.0f, 1.0f, 0.0f}, 0.0f, 1.0f, 0.14f, 0.07f };
     light_ssbo.point_light_count = 2;
 
-	// синхронизация с GPU
+	// синхронизация с GPU (копируем из локальной переменной в память на GPU)
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
+	
 	{
 		VkSamplerCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
+			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, // правило адресации (Если шейдер попытается прочитать цвет за пределами текстуры (например, по координате W > 1.0), не повторяй текстуру заново, а просто верни цвет самого крайнего пикселя)
 		};
 
 		if (vkCreateSampler(device, &info, nullptr, &missing_texture_sampler) != VK_SUCCESS) {
@@ -461,11 +508,13 @@ void initialize(VkCommandBuffer cmd) {
 			return;
 		}
 
+		// создание самой текстуры
 		uint32_t pixels[] = { 0xff000000, 0xffff00ff, 0xffff00ff, 0xff000000 };
 		missing_texture = new veekay::graphics::Texture(cmd, 2, 2, VK_FORMAT_B8G8R8A8_UNORM, pixels);
 	}
 
 	{
+		// Массив структур, где каждая структура описывает, как использовать один буфер
 		VkDescriptorBufferInfo buffer_infos[] = {
 			{ scene_uniforms_buffer->buffer, 0, sizeof(SceneUniforms) },
 			{ model_uniforms_buffer->buffer, 0, sizeof(ModelUniforms) },
@@ -505,53 +554,28 @@ void initialize(VkCommandBuffer cmd) {
 	}
 
 	{
+		// полный список уникальных вершин, из которых состоит куб
 		std::vector<Vertex> vertices = {
-			{{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f}},
-			{{+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f}},
-			{{+0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f}},
-			{{-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f}},
-
-			{{+0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-			{{+0.5f, -0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-			{{+0.5f, +0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-			{{+0.5f, +0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
-
-			{{+0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
-			{{-0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},
-			{{-0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
-			{{+0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-
-			{{-0.5f, -0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
-			{{-0.5f, -0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-			{{-0.5f, +0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},
-			{{-0.5f, +0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
-
-			{{-0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f}},
-			{{+0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f}},
-			{{+0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f}},
-			{{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f}},
-
-			{{-0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-			{{+0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-			{{+0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-			{{-0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+			{{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f}},{{-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f}},
+			{{+0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},{{+0.5f, +0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+			{{+0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},{{-0.5f, -0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 0.0f}},{{-0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},{{+0.5f, +0.5f, +0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+			{{-0.5f, -0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},{{-0.5f, -0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},{{-0.5f, +0.5f, -0.5f}, {-1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},{{-0.5f, +0.5f, +0.5f}, {-1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
+			{{-0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f}},{{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f}},
+			{{-0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},{{-0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
 		};
 
+		// инструкция по сборке треугольников из вершин
 		std::vector<uint32_t> indices = {
-			0, 1, 2, 2, 3, 0,
-			4, 5, 6, 6, 7, 4,
-			8, 9, 10, 10, 11, 8,
-			12, 13, 14, 14, 15, 12,
-			16, 17, 18, 18, 19, 16,
-			20, 21, 22, 22, 23, 20,
+			0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 8, 9, 10, 10, 11, 8,
+			12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
 		};
 
+		// создание вершинного буфера
 		cube_mesh.vertex_buffer = new veekay::graphics::Buffer(
 			vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-
+		// создание индексного буфера
 		cube_mesh.index_buffer = new veekay::graphics::Buffer(
 			indices.size() * sizeof(uint32_t), indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-
 		cube_mesh.indices = uint32_t(indices.size());
 	}
 
@@ -564,19 +588,19 @@ void initialize(VkCommandBuffer cmd) {
 	models.emplace_back(Model{
 		.mesh = cube_mesh,
 		.transform = { .position = {-2.0f, -0.5f, -1.5f} },
-		.material = { {1.0f,0.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f }
+		.material = { {1.0f,0.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // красный куб
 	});
 
 	models.emplace_back(Model{
 		.mesh = cube_mesh,
 		.transform = { .position = {1.5f, -0.5f, -0.5f} },
-		.material = { {0.0f,1.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f }
+		.material = { {0.0f,1.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // зеленый куб
 	});
 
 	models.emplace_back(Model{
 		.mesh = cube_mesh,
 		.transform = { .position = {0.0f, -0.5f, 1.0f} },
-		.material = { {0.0f,0.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f }
+		.material = { {0.0f,0.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // синий куб
 	});
 }
 
@@ -614,7 +638,7 @@ void update(double time) {
 
     ImGui::Separator();
     ImGui::Text("Directional");
-    ImGui::SliderFloat3("Dir", &directional_light.direction.x, -1.0f, 1.0f); 
+    ImGui::SliderFloat3("Dir", &directional_light.direction.x, -1.0f, 1.0f);
     directional_light.direction = veekay::vec3::normalized(directional_light.direction);
     ImGui::ColorEdit3("Color##Dir", &directional_light.color.x);
 
@@ -624,7 +648,7 @@ void update(double time) {
 
     // Point Light 0
     ImGui::PushID(0);
-    ImGui::SliderFloat3("Pos##0", &light_ssbo.point_lights[0].position.x, -5.0f, 5.0f); 
+    ImGui::SliderFloat3("Pos##0", &light_ssbo.point_lights[0].position.x, -5.0f, 5.0f);
     ImGui::ColorEdit3("Color##0", &light_ssbo.point_lights[0].color.x);
     ImGui::SliderFloat("Const##0", &light_ssbo.point_lights[0].constant, 0.0f, 2.0f);
     ImGui::SliderFloat("Lin##0", &light_ssbo.point_lights[0].linear, 0.0f, 1.0f);
@@ -633,7 +657,7 @@ void update(double time) {
 
     // Point Light 1
     ImGui::PushID(1);
-    ImGui::SliderFloat3("Pos##1", &light_ssbo.point_lights[1].position.x, -5.0f, 5.0f); 
+    ImGui::SliderFloat3("Pos##1", &light_ssbo.point_lights[1].position.x, -5.0f, 5.0f);
     ImGui::ColorEdit3("Color##1", &light_ssbo.point_lights[1].color.x);
     ImGui::SliderFloat("Const##1", &light_ssbo.point_lights[1].constant, 0.0f, 2.0f);
     ImGui::SliderFloat("Lin##1", &light_ssbo.point_lights[1].linear, 0.0f, 1.0f);
@@ -643,8 +667,8 @@ void update(double time) {
     // Spot Light UI
     ImGui::Separator();
     ImGui::Text("Spot Light");
-    ImGui::SliderFloat3("Pos##Spot", &spot_light.position.x, -5.0f, 5.0f); 
-    ImGui::SliderFloat3("Dir##Spot", &spot_light.direction.x, -1.0f, 1.0f); 
+    ImGui::SliderFloat3("Pos##Spot", &spot_light.position.x, -5.0f, 5.0f);
+    ImGui::SliderFloat3("Dir##Spot", &spot_light.direction.x, -1.0f, 1.0f);
     spot_light.direction = veekay::vec3::normalized(spot_light.direction);
     ImGui::ColorEdit3("Color##Spot", &spot_light.color.x);
     ImGui::SliderFloat("Inner CutOff (Deg)", &spot_light.inner_cutOff, 0.0f, 45.0f);
@@ -658,31 +682,31 @@ void update(double time) {
 	// просто копируем байты из структуры в этот участок памяти
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
 
-    ImGui::Begin("Camera"); 
+    ImGui::Begin("Camera");
 
     bool old_mode = camera.is_look_at;
     ImGui::Checkbox("Use Look-At Mode", &camera.is_look_at);
 
     if (old_mode != camera.is_look_at) {
         if (!camera.is_look_at) {
-             camera.rotation = {0.0f, 0.0f, 0.0f}; 
+             camera.rotation = {0.0f, 0.0f, 0.0f};
         }
     }
 
     if (camera.is_look_at) {
         ImGui::Text("Look-At Target");
-        ImGui::SliderFloat3("Target Pos", &camera.target.x, -5.0f, 5.0f); 
+        ImGui::SliderFloat3("Target Pos", &camera.target.x, -5.0f, 5.0f);
     } else {
         ImGui::Text("Rotation (Euler)");
         ImGui::Text("Pitch: %.2f, Yaw: %.2f", camera.rotation.x, camera.rotation.y);
     }
-    
+
     ImGui::End();
 
     if (ImGui::IsWindowHovered(ImGuiHoveredFlags_AnyWindow)) {
         return;
     }
-    
+
     if (!camera.is_look_at && veekay::input::mouse::isButtonDown(veekay::input::mouse::Button::left)) {
         auto delta = veekay::input::mouse::cursorDelta();
         camera.rotation.y -= delta.x * 0.15f;
@@ -690,16 +714,37 @@ void update(double time) {
         camera.rotation.x = std::clamp(camera.rotation.x, -89.0f, 89.0f);
     }
 
-	*(SceneUniforms*)scene_uniforms_buffer->mapped_region = scene_uniforms;
+    veekay::mat4 view = camera.view();
+    veekay::vec3 right = veekay::vec3::normalized({ view[0][0], view[1][0], view[2][0] });
+    veekay::vec3 front = veekay::vec3::normalized({ -view[0][2], -view[1][2], -view[2][2] });
 
+    float speed = 0.05f;
+	
+	// перемещение
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::w)) camera.position += front * speed;
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::s)) camera.position -= front * speed;
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::d)) camera.position += right * speed;
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::a)) camera.position -= right * speed;
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::q)) camera.position.y += speed;
+    if (veekay::input::keyboard::isKeyDown(veekay::input::keyboard::Key::z)) camera.position.y -= speed;
+
+    float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
+    *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
+
+    // MERGE: Используем более правильный способ копирования в Dynamic UBO с выравниванием из нового каркаса
 	const size_t alignment =
 		veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
 
-	for (size_t i = 0, n = model_uniforms.size(); i < n; ++i) {
-		const ModelUniforms& uniforms = model_uniforms[i];
+	for (size_t i = 0, n = models.size(); i < n; ++i) {
+		ModelUniforms uniforms;
+        uniforms.model = models[i].transform.matrix();
+        uniforms.albedo_color = models[i].material.albedo; // копируем цвет
+        uniforms.specular_color = models[i].material.specular;
+        uniforms.shininess = models[i].material.shininess;
 
+		//вычисляем точный адрес внутри большого буфера, куда нужно положить данные
 		char* const pointer = static_cast<char*>(model_uniforms_buffer->mapped_region) + i * alignment;
-		*reinterpret_cast<ModelUniforms*>(pointer) = uniforms;
+		memcpy(pointer, &uniforms, sizeof(ModelUniforms)); // копируем по вычисленному адресу (в общей памяти, доступной GPU, лежит блок данных для куба)
 	}
 }
 
@@ -717,12 +762,13 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 	VkClearValue clear_depth{.depthStencil = {1.0f, 0}};
 	VkClearValue clear_values[] = {clear_color, clear_depth};
 
+	// все параметры для начала рендеринга
 	VkRenderPassBeginInfo rp_info{
 		.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
 		.renderPass = veekay::app.vk_render_pass,
 		.framebuffer = framebuffer,
-		.renderArea = { .extent = {veekay::app.window_width, veekay::app.window_height} },
-		.clearValueCount = 2,
+		.renderArea = { .extent = {veekay::app.window_width, veekay::app.window_height} }, // все окно
+		.clearValueCount = 2, // 2 значения для очистки (цвет и глубина)
 		.pClearValues = clear_values,
 	};
 
@@ -736,10 +782,11 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 	VkBuffer current_vertex_buffer = VK_NULL_HANDLE;
 	VkBuffer current_index_buffer = VK_NULL_HANDLE;
 
-	const size_t model_uniorms_alignment =
+	// MERGE: Используем более правильный способ получения смещения из нового каркаса
+	const size_t model_uniforms_alignment =
 		veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
 
-	for (size_t i = 0, n = models.size(); i < n; ++i) {
+	for (size_t i = 0; i < models.size(); ++i) {
 		const Model& model = models[i];
 		const Mesh& mesh = model.mesh;
 
@@ -757,20 +804,21 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 			vkCmdBindIndexBuffer(cmd, current_index_buffer, zero_offset, VK_INDEX_TYPE_UINT32);
 		}
 
-		uint32_t offset = i * model_uniorms_alignment;
+		uint32_t dyn_offset = i * model_uniforms_alignment; // MERGE: Используем выровненное смещение (вычисляем то же самое смещение, что в update)
+
 		// говорим GPU, какую таблицу ссылок использовать (descriptor_set)
 		// шейдеры теперь знают, где искать view_projection, model, и массив point_lights
 		// dyn_offset - динамический UBO. Подключаем 1 большой model_uniforms_buffer, но для каждого объекта
 		// указываем смещение. GPU будет читать данные для i-го объекта, начиная с i * sizeof(ModelUniforms) байта в этом буфере
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout,
-		                    0, 1, &descriptor_set, 1, &offset);
+		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
 
-		struct Push { 
-            veekay::vec3 cam; float _p0; 
-            veekay::vec3 amb; float _p1; 
-            veekay::vec3 dir; float _p2; 
-            veekay::vec3 dcol; float _p3; 
-            
+		// Пуш-константы
+		struct Push {
+            veekay::vec3 cam; float _p0; // позиция камеры
+            veekay::vec3 amb; float _p1; // Цвет ambient-света
+            veekay::vec3 dir; float _p2; // Направление directional-света
+            veekay::vec3 dcol; float _p3; // Цвет directional-света
+
             veekay::vec3 s_pos; float _s_p0;
             veekay::vec3 s_dir; float _s_p1;
             veekay::vec3 s_col; float _s_p2;
@@ -784,7 +832,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
             ambient_light.color, 0,
             directional_light.direction, 0,
             directional_light.color, 0,
-            
+
             spot_light.position, 0,
             spot_light.direction, 0,
             spot_light.color, 0,
@@ -796,7 +844,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 		// самый быстрый способ передачи данных, минуя буферы, просто ложим в регистры GPU
         vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
 
-		// нарисуй объект, состоящий из mesh.indices вершин
+		// нарисуй объект, состоящий из mesh.indices вершин (по итогу: отдали GPU приказ нарисовать куб и указали, где в памяти лежат данные о его материале)
 		vkCmdDrawIndexed(cmd, mesh.indices, 1, 0, 0, 0);
 	}
 

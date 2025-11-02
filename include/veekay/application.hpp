@@ -13,6 +13,7 @@ struct Application {
 	uint32_t window_width;
 	uint32_t window_height;
 
+	// дескриптор нашего логического GPU
 	VkDevice vk_device;
 	VkPhysicalDevice vk_physical_device;
 	VkRenderPass vk_render_pass;

@@ -52,13 +52,17 @@ layout(push_constant) uniform PushConstants {
 
 layout(location=0) out vec4 final_color;
 
+// Модель освещения Блинн-Фонга
+// N - нормаль, V - вектор К камере, L - вектор К свету
 vec3 calculate_blinn_phong(vec3 N, vec3 V, vec3 L, vec3 light_color, float attenuation) {
     float diff = max(dot(N, L), 0.0);
-    vec3 H = normalize(V + L);
-    float spec = pow(max(dot(N, H), 0.0), model.shininess);
+    vec3 H = normalize(V + L); // вычисляем вектор полупути
+    float spec = pow(max(dot(N, H), 0.0), model.shininess); // вычисляем блик
     return light_color * attenuation * (model.albedo_color * diff + model.specular_color * spec);
 }
 
+// делаем прожекторный свет; помимо вызова Блинна-Фонга, проверяем, попадает ли пиксель в конус света, вычисляем
+// интенсивность с учетом плавных краев
 vec3 calculate_spot_light(vec3 N, vec3 V) {
     vec3 light_vec = pc.spot_pos - f_position;
     float dist = length(light_vec);
@@ -70,7 +74,7 @@ vec3 calculate_spot_light(vec3 N, vec3 V) {
     
     vec3 D = pc.spot_dir; 
     
-    float theta = dot(-L, D); // ИСПОЛЬЗУЕМ -L
+    float theta = dot(-L, D);
     
     float constant = 1.0;
     float linear = 0.14; 
@@ -95,17 +99,19 @@ vec3 calculate_spot_light(vec3 N, vec3 V) {
 }
 
 // логика расчета цвета на основе модели Блинн-Фонга
+// разные типы источников света: ambient - рассеянный; directional - направленный; point - точечные; spot - прожектор
 void main() {
     vec3 N = normalize(f_normal);
     vec3 V = normalize(pc.camera_position - f_position); // вычисляем вектор от точки к камере
-    vec3 color = pc.ambient_color * model.albedo_color; // добавляем фоновый цвет
+    vec3 color = pc.ambient_color * model.albedo_color; // добавляем фоновый цвет; ambient - умножение цвета окружения на цвет объекта
 
 
     vec3 dir_light_dir = normalize(-pc.directional_dir);
-    color += calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0); // добавляем направленный цвет
+    color += calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0); // добавляем направленный цвет; постоянное направление цвета
 
     // Point lights
     // добавляем точечные цвета
+    // для каждого источника вычисляется направление L, затухание по закону обратных квадратов
     for (uint i = 0; i < lights.point_light_count; ++i) {
         vec3 light_vec = lights.point_lights[i].position - f_position;
         float dist = length(light_vec);
@@ -115,7 +121,7 @@ void main() {
                 lights.point_lights[i].constant +
                 lights.point_lights[i].linear * dist +
                 lights.point_lights[i].quadratic * dist * dist
-            );
+            ); // затухание по закону обратных квадратов
             color += calculate_blinn_phong(N, V, L, lights.point_lights[i].color, attenuation);
         }
     }

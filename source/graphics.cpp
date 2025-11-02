@@ -374,7 +374,6 @@ Texture::~Texture() {
 }
 
 void init() {
-	VkDevice& device = veekay::app.vk_device;
 	VkPhysicalDevice& physical_device = veekay::app.vk_physical_device;
 
 	VkPhysicalDeviceProperties props;
