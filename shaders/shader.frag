@@ -1,6 +1,6 @@
 #version 460
 
-layout(location=0) in vec3 f_position; // сюда приходит интерполированная(промежут. значения на основе известных, в графике - заполнение между пикселями)
+layout(location=0) in vec3 f_position; // сюда приходит из растеризатора интерполированная(промежут. значения на основе известных, в графике - заполнение между пикселями)
                                        // позиция пикселя в мировых координатах 
 layout(location=1) in vec3 f_normal; // сюда приходит интерполированная нормаль
 layout(location=2) in vec2 f_uv;
@@ -22,6 +22,7 @@ struct PointLight {
     float _pad;
 };
 
+// объявляем SSBO, привязанный к слоту 2
 layout(set=0, binding=2) readonly buffer LightSSBO {
     PointLight point_lights[8];
     uint point_light_count;
@@ -55,9 +56,9 @@ layout(location=0) out vec4 final_color;
 // Модель освещения Блинн-Фонга
 // N - нормаль, V - вектор К камере, L - вектор К свету
 vec3 calculate_blinn_phong(vec3 N, vec3 V, vec3 L, vec3 light_color, float attenuation) {
-    float diff = max(dot(N, L), 0.0);
+    float diff = max(dot(N, L), 0.0); // диффузный компонент (имитация света на матовых поверхностях)
     vec3 H = normalize(V + L); // вычисляем вектор полупути
-    float spec = pow(max(dot(N, H), 0.0), model.shininess); // вычисляем блик
+    float spec = pow(max(dot(N, H), 0.0), model.shininess); // вычисляем блик (имитация света на глянцевых поверхностях)
     return light_color * attenuation * (model.albedo_color * diff + model.specular_color * spec);
 }
 

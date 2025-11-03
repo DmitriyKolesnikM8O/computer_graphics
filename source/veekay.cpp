@@ -48,7 +48,9 @@ VkFormat vk_swapchain_format;
 std::vector<VkImage> vk_swapchain_images;
 std::vector<VkImageView> vk_swapchain_image_views;
 
+// ручка к очереди команд на GPU
 VkQueue vk_graphics_queue;
+// индекс семейства очередей
 uint32_t vk_graphics_queue_family;
 
 // NOTE: ImGui rendering objects
@@ -104,17 +106,21 @@ namespace veekay {
 
 } // namespace veekay
 
+// Берем код из (update, render, input) и оборачиваем его в полноценное Vulkan-приложение
 int veekay::run(const veekay::ApplicationInfo& app_info) {
 	veekay::app.running = true;
 	
+	// инициализируем библиотеку GLFW
 	if (!glfwInit()) {
 		std::cerr << "Failed to initialize GLFW\n";
 		return 1;
 	}
 
+	
 	glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
 	glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
 
+	// создаем окно на экране
 	window = glfwCreateWindow(window_default_width, window_default_height,
 	                          window_title, nullptr, nullptr);
 	if (!window) {
@@ -140,6 +146,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 #endif
 
 	{ // NOTE: Initialize Vulkan: grab device and create swapchain
+		// подключаем драйвер vulkan
 		vkb::InstanceBuilder instance_builder;
 
 		auto builder_result = instance_builder.require_api_version(1, 2, 0)
@@ -163,11 +170,12 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			return 1;
 		}
 
+		// находим физическую видеокарту на устройстве
 		vkb::PhysicalDeviceSelector physical_device_selector(instance);
 
 		VkPhysicalDeviceFeatures device_features{
-			.samplerAnisotropy = true,
-		};
+			.samplerAnisotropy = true, // при выборе GPU убеждаемся, что поддерживает анизотропную фильтрацию
+		}; 
 
 		auto selector_result = physical_device_selector.set_surface(vk_surface)
 		                                               .set_required_features(device_features)
@@ -180,6 +188,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 		auto physical_device = selector_result.value();
 
 		{
+			// подключаемся к физической видеокарте, создавая логическое устройство
 			vkb::DeviceBuilder device_builder(physical_device);
 
 			auto result = device_builder.build();
@@ -199,6 +208,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			vk_graphics_queue = device.get_queue(queue_type).value();
 			vk_graphics_queue_family = device.get_queue_index(queue_type).value();
 		}
+
 
 		vkb::SwapchainBuilder swapchain_builder(vk_physical_device, vk_device, vk_surface);
 
@@ -243,16 +253,16 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 
 		{
 			VkDescriptorPoolSize size = {
-				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+				.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, // слоты для дескрипторов типа "текстура + сэмплер"
 				.descriptorCount = IMGUI_IMPL_VULKAN_MINIMUM_IMAGE_SAMPLER_POOL_SIZE,
 			};
 
 			VkDescriptorPoolCreateInfo info = {
-				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-				.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT,
+				.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO, 
+				.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT, // Разреши освобождать Descriptor Set'ы, выделенные из этого пула, по отдельности
 				.maxSets = size.descriptorCount,
-				.poolSizeCount = 1,
-				.pPoolSizes = &size,
+				.poolSizeCount = 1, // Мы описываем только один тип ресурсов (текстуры)
+				.pPoolSizes = &size, // Вот указатель на описание этого типа
 			};
 
 			if (vkCreateDescriptorPool(vk_device, &info, 0, &imgui_descriptor_pool) != VK_SUCCESS) {
@@ -261,12 +271,15 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			}
 		}
 
+		// ImGui нужно рисовать свой интерфейс поверх уже отрендеренной 3D-сцены.
+		// Для этого ему нужна своя собственная схема рендеринга (VkRenderPass)
 		{
+			// описание одного вложения — цветового изображения из swapchain'а, на котором уже нарисована твоя 3D-сцена
 			VkAttachmentDescription attachment{
 				.format = vk_swapchain_format,
 				.samples = VK_SAMPLE_COUNT_1_BIT,
-				.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
-				.storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+				.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD, // Когда этот рендер-пасс начнется, не очищай изображение. Сохрани то, что в нем уже нарисовано (не стираем сцену, рисуем поверх нее)
+				.storeOp = VK_ATTACHMENT_STORE_OP_STORE, // Когда этот рендер-пасс закончится, сохрани результат в этом изображении
 				.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
 				.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
 				.initialLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
@@ -278,12 +291,14 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 				.layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
 			};
 
+			// Описывает один этап (подпроход) внутри рендер-пасса (он всего 1)
 			VkSubpassDescription subpass{
-				.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+				.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS, // Этот этап будет использоваться для графических команд
 				.colorAttachmentCount = 1,
 				.pColorAttachments = &ref,
 			};
 
+			// Это правило синхронизации. Оно гарантирует, что один этап не начнется, пока другой не завершится
 			VkSubpassDependency dependency{
 				.srcSubpass = VK_SUBPASS_EXTERNAL,
 				.dstSubpass = 0,
@@ -309,11 +324,14 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			}
 		}
 
+		// создаем набор фреймбуферов (VkFramebuffer) специально для рендер-пасса ImGui
+		// Render Pass описывает схему рендеринга ImGui ("взять готовое изображение, нарисовать поверх, сохранить")
+		// VkFramebuffer связывает эту абстрактную схему с конкретными изображениями
 		{
 			VkFramebufferCreateInfo info{
 				.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
-				.renderPass = imgui_render_pass,
-				.attachmentCount = 1,
+				.renderPass = imgui_render_pass, // совместим только с imgui_render_pass
+				.attachmentCount = 1, // будем подключать 1 изображение
 				.width = app.window_width,
 				.height = app.window_height,
 				.layers = 1,
@@ -323,6 +341,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 
 			imgui_framebuffers.resize(count);
 
+			// создаем по 1 фреймбуферу для каждого изображения
 			for (size_t i = 0; i < count; ++i) {
 				info.pAttachments = &vk_swapchain_image_views[i];
 				if (vkCreateFramebuffer(vk_device, &info, nullptr, &imgui_framebuffers[i]) != VK_SUCCESS) {
@@ -332,16 +351,19 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 			}
 		}
 
+		// создание командных буферов специально для отрисовки ImGui
 		{
 			size_t count = imgui_framebuffers.size();
 
 			imgui_command_buffers.resize(count);
 
+			// создание пула команд
+			// VkCommandPool - объект-менеджер памяти, из которого выделяются командные буферы
 			{
 				VkCommandPoolCreateInfo info{
 					.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
-					.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT,
-					.queueFamilyIndex = vk_graphics_queue_family,
+					.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT, // разрешает "перезаписывать" командные буферы, выделенные из этого пула, по отдельности с помощью vkResetCommandBuffer
+					.queueFamilyIndex = vk_graphics_queue_family, // Этот пул будет создавать командные буферы, предназначенные для графической очереди
 				};
 
 				if (vkCreateCommandPool(vk_device, &info, nullptr, &imgui_command_pool) != VK_SUCCESS) {
@@ -350,12 +372,13 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 				}
 			}
 
+			// создание VkCommandBuffer
 			{
 				VkCommandBufferAllocateInfo info{
 					.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-					.commandPool = imgui_command_pool,
-					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-					.commandBufferCount = static_cast<uint32_t>(imgui_command_buffers.size()),
+					.commandPool = imgui_command_pool, // Выдели память из этой конкретной фабрики
+					.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY, // Создай первичные командные буферы (Первичные — это те, которые можно напрямую отправлять в очередь (vkQueueSubmit))
+					.commandBufferCount = static_cast<uint32_t>(imgui_command_buffers.size()), // Создай мне столько командных буферов, сколько у меня фреймбуферов
 				};
 
 				if (vkAllocateCommandBuffers(vk_device, &info, imgui_command_buffers.data()) != VK_SUCCESS) {
@@ -380,6 +403,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 		ImGui_ImplVulkan_Init(&info);
 	}
 
+	// выбора наилучшего формата для буфера глубины
 	{
 		VkFormat candidates[] = {
 			VK_FORMAT_D32_SFLOAT,
@@ -561,13 +585,14 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 	{ // NOTE: Create framebuffer objects from swapchain images
 		VkImageView attachments[] = {VK_NULL_HANDLE, vk_image_depth_view};
 
+		// структура описание для кадрового буфера
 		VkFramebufferCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
 
 			.renderPass = vk_render_pass,
 
-			.attachmentCount = 2,
-			.pAttachments = attachments,
+			.attachmentCount = 2, // подключаем 2 изображения к слотам этого render_pass
+			.pAttachments = attachments, // указатель на массив с этими изображениями
 
 			.width = app.window_width,
 			.height = app.window_height,
@@ -771,6 +796,7 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 				.pImageIndices = &swapchain_image_index,
 			};
 
+			// говорим GPU взять готовое изображение из swapchain и показать его на мониторе
 			vkQueuePresentKHR(vk_graphics_queue, &info);
 
 			vk_current_frame = (vk_current_frame + 1) % max_frames_in_flight;

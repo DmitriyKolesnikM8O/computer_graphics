@@ -16,6 +16,26 @@
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
 
+
+/*
+1. Матрица камеры рассчитывается с помощью матрицы трансформации
+камеры (положения и ориентации/поворота). Должны быть реализованы
+следующие компоненты освещения: рассеянное, направленное и
+точечные источники света. Точечные источники света должны терять
+свою интенсивность по закону обратных квадратов
+
+
+1. Добавьте еще один тип источников света. Если по варианту были
+точечные, то реализуйте еще и прожекторные
+2. Добавьте ещё один режим отображения камеры. Если по варианту был
+расчет матрицы вида при помощи матрицы трансформации модели
+камеры, то реализуйте еще и режим Look-At. Сделайте для этого UI
+элемент с возможностью сохранения состояния камеры до
+переключения режима
+*/
+
+
+
 constexpr float PI = 3.14159265359f;
 inline float to_radians(float degrees) { return degrees * (PI / 180.0f); }
 inline float to_degrees(float radians) { return radians * (180.0f / PI); }
@@ -398,7 +418,7 @@ void initialize(VkCommandBuffer cmd) {
 		// В шейдерах будет ресурс в binding = 0. Это будет UNIFORM_BUFFER. Он будет один (descriptorCount = 1). Доступ к нему нужен и в вершинном, и во фрагментном шейдере
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
-			{ 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
+			{ 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT }, // для Description Set будет SSBO
 			{ 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT }
 		};
 
@@ -524,7 +544,7 @@ void initialize(VkCommandBuffer cmd) {
 		VkWriteDescriptorSet write_infos[] = {
 			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffer_infos[0] },
 			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &buffer_infos[1] },
-			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer_infos[2] }
+			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer_infos[2] } // вписываем реальный адрес буфера
 		};
 
 		// В binding = 0 этого Set'а запиши указатель на scene_uniforms_buffer
