@@ -5,7 +5,8 @@
 #include <iostream>
 #include <fstream>
 #include <algorithm>
-#include <cstring> // MERGE: Добавлено для memcpy
+#include <cstring> 
+#include <GLFW/glfw3.h>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -16,24 +17,18 @@
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
 
-
-/*
-1. Матрица камеры рассчитывается с помощью матрицы трансформации
-камеры (положения и ориентации/поворота). Должны быть реализованы
-следующие компоненты освещения: рассеянное, направленное и
-точечные источники света. Точечные источники света должны терять
-свою интенсивность по закону обратных квадратов
-
-
-1. Добавьте еще один тип источников света. Если по варианту были
-точечные, то реализуйте еще и прожекторные
-2. Добавьте ещё один режим отображения камеры. Если по варианту был
-расчет матрицы вида при помощи матрицы трансформации модели
-камеры, то реализуйте еще и режим Look-At. Сделайте для этого UI
-элемент с возможностью сохранения состояния камеры до
-переключения режима
-*/
-
+// загружаем изображение из файла
+veekay::graphics::Texture* load_texture_from_file(const char* path, VkCommandBuffer cmd) {
+    unsigned width, height;
+    std::vector<unsigned char> image_data;
+    unsigned error = lodepng::decode(image_data, width, height, path);
+    if (error) {
+        std::cerr << "LodePNG error: " << lodepng_error_text(error) << std::endl;
+        return nullptr;
+    }
+	// создаем текстуру
+    return new veekay::graphics::Texture(cmd, width, height, VK_FORMAT_R8G8B8A8_UNORM, image_data.data());
+}
 
 
 constexpr float PI = 3.14159265359f;
@@ -48,7 +43,7 @@ constexpr uint32_t max_point_lights = 8;
 struct Vertex {
 	veekay::vec3 position;
 	veekay::vec3 normal;
-	veekay::vec2 uv;
+	veekay::vec2 uv; // вершины объектов должны содержать текстурные координаты
 };
 
 // глобальные данные для всей сцены
@@ -89,10 +84,18 @@ struct Transform {
 };
 
 // описываем один полноценный объект
+
 struct Model {
 	Mesh mesh;
 	Transform transform;
 	Material material;
+
+
+    veekay::graphics::Texture* albedo_texture;
+    veekay::graphics::Texture* specular_texture;
+    veekay::graphics::Texture* emissive_texture;
+    VkSampler sampler;
+    VkDescriptorSet descriptor_set;
 };
 
 struct Camera {
@@ -141,6 +144,10 @@ struct SpotLight {
 	veekay::vec3 color = {1.0f, 1.0f, 1.0f};
 	float inner_cutOff = 12.5f; // Угол конуса (в градусах)
 	float outer_cutOff = 17.5f;
+
+	float constant = 1.0f;
+    float linear = 0.14f;
+    float quadratic = 0.07f;
 };
 
 struct LightSSBO {
@@ -174,8 +181,8 @@ inline namespace {
 	// описание всей структуры данных, которую ожидает шейдер: UBO, Dynamic UBO и SSBO
 	VkDescriptorSetLayout descriptor_set_layout;
 
-	// таблица ссылок для шейдера (реальные указатели на буферы в памяти)
-	VkDescriptorSet descriptor_set;
+	// это нам больше не нужно
+	// VkDescriptorSet descriptor_set;
 
 	// описание интерфейса между шейдерами и данными, передаваемыми из кода
 	VkPipelineLayout pipeline_layout;
@@ -194,13 +201,12 @@ inline namespace {
 	Mesh plane_mesh;
 	Mesh cube_mesh;
 
-	veekay::graphics::Texture* missing_texture;
 
-	// говорим шейдеру, как читать пиксели из любой структуры
-	VkSampler missing_texture_sampler;
-
-	veekay::graphics::Texture* texture;
-	VkSampler texture_sampler;
+	// veekay::graphics::Texture* missing_texture;
+	// VkSampler missing_texture_sampler;
+    veekay::graphics::Texture *texture_lenna, *texture_checker;
+    veekay::graphics::Texture *texture_white, *texture_black, *texture_emissive_example;
+    VkSampler sampler_linear, sampler_nearest;
 }
 
 float toRadians(float degrees) {
@@ -218,7 +224,7 @@ veekay::mat4 Transform::matrix() const {
 }
 
 veekay::mat4 Camera::view() const {
-	// доп задание
+	// доп задание в лабе 2
     if (is_look_at) {
         return veekay::mat4::look_at(position, target, {0.0f, 1.0f, 0.0f});
     }
@@ -264,6 +270,24 @@ VkShaderModule loadShaderModule(const char* path) {
 
 void initialize(VkCommandBuffer cmd) {
 	VkDevice& device = veekay::app.vk_device;
+
+	// загружаем текстуру и создаем сэмплеры
+    texture_lenna = load_texture_from_file("assets/lenna.png", cmd);
+    uint32_t checker_pixels[] = { 0xffffffff, 0xff000000, 0xff000000, 0xffffffff };
+    texture_checker = new veekay::graphics::Texture(cmd, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, checker_pixels);
+    uint32_t white_pixel = 0xffffffff;
+    texture_white = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &white_pixel);
+    uint32_t black_pixel = 0xff000000;
+    texture_black = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &black_pixel);
+    uint32_t emissive_pixel = 0xff00ffff;
+    texture_emissive_example = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &emissive_pixel);
+
+	// создаем 2 сэмплера (linear - для сглаженного (размытого) изображения; nearest - для четкого, пиксельного отображения)
+	// addressModeV{U} - заставляет текстуру повторяться
+    VkSamplerCreateInfo sampler_info_linear{ .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_LINEAR, .minFilter = VK_FILTER_LINEAR, .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT, .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT, .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT };
+    vkCreateSampler(device, &sampler_info_linear, nullptr, &sampler_linear);
+    VkSamplerCreateInfo sampler_info_nearest{ .sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO, .magFilter = VK_FILTER_NEAREST, .minFilter = VK_FILTER_NEAREST, .addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT, .addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT, .addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT };
+    vkCreateSampler(device, &sampler_info_nearest, nullptr, &sampler_nearest);
 
 	// загружаем не GLSL-код, а SPIR-V (бинарный, платформонезависимый промежуточный код)
 	vertex_shader_module = loadShaderModule("./shaders/shader.vert.spv");
@@ -394,13 +418,13 @@ void initialize(VkCommandBuffer cmd) {
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 },
 			{ VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 8 },
 			{ VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 8 },
-			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 8 }
+			{ VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, max_models * 3 } 
 		};
 
 		// описываем конфигурацию пула дескрипторов
 		VkDescriptorPoolCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
-			.maxSets = 1,
+			.maxSets = max_models,
 			.poolSizeCount = 4,
 			.pPoolSizes = pools,
 		};
@@ -416,16 +440,20 @@ void initialize(VkCommandBuffer cmd) {
 	{
 		// массив, где каждый элемент описывает 1 ресурс, доступный шейдеру
 		// В шейдерах будет ресурс в binding = 0. Это будет UNIFORM_BUFFER. Он будет один (descriptorCount = 1). Доступ к нему нужен и в вершинном, и во фрагментном шейдере
+		// + привязки для текстур (в слоте 3 COMBINED_IMAGE_SAMPLER)
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
 			{ 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT }, // для Description Set будет SSBO
-			{ 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT }
+			{ 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT },
+            { 3, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT },
+            { 4, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT },
+            { 5, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT }
 		};
 
 		// описываем, как будет выглядеть 1 Descriptor Set
 		VkDescriptorSetLayoutCreateInfo info{
 			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-			.bindingCount = 3,
+			.bindingCount = 6,
 			.pBindings = bindings,
 		};
 
@@ -437,25 +465,15 @@ void initialize(VkCommandBuffer cmd) {
 		}
 	}
 
-	// создаем VkDescriptorSet (таблицу ссылок)
-	{
-		VkDescriptorSetAllocateInfo info{
-			.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
-			.descriptorPool = descriptor_pool, // из какого пула берем память
-			.descriptorSetCount = 1,
-			.pSetLayouts = &descriptor_set_layout, // по какому шаблону создавать
-		};
-
-		if (vkAllocateDescriptorSets(device, &info, &descriptor_set) != VK_SUCCESS) {
-			std::cerr << "Failed to create Vulkan descriptor set\n";
-			veekay::app.running = false;
-			return;
-		}
-	}
+	// это больше не нужно
+	// {
+	// 	VkDescriptorSetAllocateInfo info{...};
+	// 	if (vkAllocateDescriptorSets(device, &info, &descriptor_set) != VK_SUCCESS) {...}
+	// }
 
 	VkPushConstantRange push_range{
 		.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
-		.size = 128
+		.size = 144
 	};
 
 	// способы, которыми мы будем передавать данные в шейдеры (кроме вершинных атрибутов)
@@ -515,66 +533,23 @@ void initialize(VkCommandBuffer cmd) {
 
 	// синхронизация с GPU (копируем из локальной переменной в память на GPU)
     *(LightSSBO*)light_ssbo_buffer->mapped_region = light_ssbo;
-	
-	{
-		VkSamplerCreateInfo info{
-			.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-			.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE, // правило адресации (Если шейдер попытается прочитать цвет за пределами текстуры (например, по координате W > 1.0), не повторяй текстуру заново, а просто верни цвет самого крайнего пикселя)
-		};
-
-		if (vkCreateSampler(device, &info, nullptr, &missing_texture_sampler) != VK_SUCCESS) {
-			std::cerr << "Failed to create Vulkan texture sampler\n";
-			veekay::app.running = false;
-			return;
-		}
-
-		// создание самой текстуры
-		uint32_t pixels[] = { 0xff000000, 0xffff00ff, 0xffff00ff, 0xff000000 };
-		missing_texture = new veekay::graphics::Texture(cmd, 2, 2, VK_FORMAT_B8G8R8A8_UNORM, pixels);
-	}
 
 	{
-		// Массив структур, где каждая структура описывает, как использовать один буфер
-		VkDescriptorBufferInfo buffer_infos[] = {
-			{ scene_uniforms_buffer->buffer, 0, sizeof(SceneUniforms) },
-			{ model_uniforms_buffer->buffer, 0, sizeof(ModelUniforms) },
-			{ light_ssbo_buffer->buffer, 0, VK_WHOLE_SIZE }
-		};
-
-		VkWriteDescriptorSet write_infos[] = {
-			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &buffer_infos[0] },
-			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &buffer_infos[1] },
-			{ VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, descriptor_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &buffer_infos[2] } // вписываем реальный адрес буфера
-		};
-
-		// В binding = 0 этого Set'а запиши указатель на scene_uniforms_buffer
-		vkUpdateDescriptorSets(device, 3, write_infos, 0, nullptr);
-	}
-
-	{
-		// вершины для треугольника
+		// 3 элемент везд - структурные координаты
 		std::vector<Vertex> vertices = {
-			{{-5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-			{{5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
-			{{5.0f, 0.0f, -5.0f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},
-			{{-5.0f, 0.0f, -5.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+			{{-5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 5.0f}}, 
+			{{5.0f, 0.0f, 5.0f}, {0.0f, 1.0f, 0.0f}, {5.0f, 5.0f}},
+			{{5.0f, 0.0f, -5.0f}, {0.0f, 1.0f, 0.0f}, {5.0f, 0.0f}},
+			{{-5.0f, 0.0f, -5.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
 		};
-
 		std::vector<uint32_t> indices = {0, 1, 2, 2, 3, 0};
-
-		// Сюда копирую данные (в память GPU)
-		// VK_BUFFER_USAGE_VERTEX_BUFFER_BIT - использовать кусок памяти под хранение вершин
-		plane_mesh.vertex_buffer = new veekay::graphics::Buffer(
-			vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-
-		plane_mesh.index_buffer = new veekay::graphics::Buffer(
-			indices.size() * sizeof(uint32_t), indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-
+		plane_mesh.vertex_buffer = new veekay::graphics::Buffer(vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+		plane_mesh.index_buffer = new veekay::graphics::Buffer(indices.size() * sizeof(uint32_t), indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 		plane_mesh.indices = uint32_t(indices.size());
 	}
 
 	{
-		// полный список уникальных вершин, из которых состоит куб
+		// создание геометрии куба
 		std::vector<Vertex> vertices = {
 			{{-0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {1.0f, 1.0f}},{{-0.5f, +0.5f, -0.5f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f}},
 			{{+0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, +0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 1.0f}},{{+0.5f, +0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 1.0f}},
@@ -583,52 +558,93 @@ void initialize(VkCommandBuffer cmd) {
 			{{-0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, -0.5f, +0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {1.0f, 1.0f}},{{-0.5f, -0.5f, -0.5f}, {0.0f, -1.0f, 0.0f}, {0.0f, 1.0f}},
 			{{-0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},{{+0.5f, +0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},{{+0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 1.0f}},{{-0.5f, +0.5f, +0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
 		};
-
-		// инструкция по сборке треугольников из вершин
-		std::vector<uint32_t> indices = {
-			0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 8, 9, 10, 10, 11, 8,
-			12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20,
-		};
-
-		// создание вершинного буфера
-		cube_mesh.vertex_buffer = new veekay::graphics::Buffer(
-			vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-		// создание индексного буфера
-		cube_mesh.index_buffer = new veekay::graphics::Buffer(
-			indices.size() * sizeof(uint32_t), indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+		std::vector<uint32_t> indices = { 0, 1, 2, 2, 3, 0, 4, 5, 6, 6, 7, 4, 8, 9, 10, 10, 11, 8, 12, 13, 14, 14, 15, 12, 16, 17, 18, 18, 19, 16, 20, 21, 22, 22, 23, 20, };
+		cube_mesh.vertex_buffer = new veekay::graphics::Buffer( vertices.size() * sizeof(Vertex), vertices.data(), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+		cube_mesh.index_buffer = new veekay::graphics::Buffer( indices.size() * sizeof(uint32_t), indices.data(), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
 		cube_mesh.indices = uint32_t(indices.size());
 	}
 
+	// Инициализирую модели с новыми полями
+	
+	// пол использует texture_checker и sampler_nearest
+	// plane_mesh - геометрия плоскости
+	// Основная текстура texture_checker - черно-белая шахматка
+	// specular_texture = texture_white - карта бликов: белая (супер глянцевая поверхность)
+	// .emissive_texture = texture_black - карта свечения: черная (не светится)
+	// .sampler = sampler_nearest - сэмплер: четкие пиксели, без размытия
 	models.emplace_back(Model{
-		.mesh = plane_mesh,
-		.transform = {},
-		.material = { {0.8f,0.8f,0.8f}, 0, {0.5f,0.5f,0.5f}, 16.0f }
+		.mesh = plane_mesh, .transform = {}, .material = {{1.0f,1.0f,1.0f}, 0, {0.1f,0.1f,0.1f}, 4.0f },
+        .albedo_texture = texture_checker, .specular_texture = texture_white, .emissive_texture = texture_black, .sampler = sampler_nearest
 	});
 
+	// левый куб использует texture_lenna и sampler_linear
+	// основная текстура - texture_lenna (lenna.png)
+	// .sampler = sampler_linear - сэмплер, сглаженные пиксели (билинейная фильтрация)
 	models.emplace_back(Model{
-		.mesh = cube_mesh,
-		.transform = { .position = {-2.0f, -0.5f, -1.5f} },
-		.material = { {1.0f,0.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // красный куб
+		.mesh = cube_mesh, .transform = { .position = {-2.0f, -0.5f, -1.5f} }, .material = {{1.0f,1.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f },
+        .albedo_texture = texture_lenna, .specular_texture = texture_white, .emissive_texture = texture_black, .sampler = sampler_linear
 	});
 
+	// правый куб (матовый)
+	// Карта бликов: черная (МАТОВАЯ поверхность)
+	// Карта свечения: черная (не светится)
+	// Сэмплер: четкие пиксели
 	models.emplace_back(Model{
-		.mesh = cube_mesh,
-		.transform = { .position = {1.5f, -0.5f, -0.5f} },
-		.material = { {0.0f,1.0f,0.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // зеленый куб
+		.mesh = cube_mesh, .transform = { .position = {1.5f, -0.5f, -0.5f} }, .material = {{1.0f,1.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 128.0f },
+        .albedo_texture = texture_checker, .specular_texture = texture_black, .emissive_texture = texture_black, .sampler = sampler_nearest
 	});
 
+	// центральный куб (светящийся)
+	// .albedo_texture = texture_white, основная текстура: белая (просто чтобы был базовый цвет)
+	// .specular_texture = texture_white, карта бликов: белая (глянцевый)
+	// .emissive_texture = texture_emissive_example, карта свечения: яркая (бирюзовая/желтая)
 	models.emplace_back(Model{
-		.mesh = cube_mesh,
-		.transform = { .position = {0.0f, -0.5f, 1.0f} },
-		.material = { {0.0f,0.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f } // синий куб
+		.mesh = cube_mesh, .transform = { .position = {0.0f, -0.5f, 1.0f} }, .material = {{1.0f,1.0f,1.0f}, 0, {1.0f,1.0f,1.0f}, 64.0f },
+        .albedo_texture = texture_white, .specular_texture = texture_white, .emissive_texture = texture_emissive_example, .sampler = sampler_linear
 	});
+
+    // настраиваем персональные Description Set в цикле
+	// создаем VkWriteDescriptorSet, который связывает конкретную текстуру 
+	// (model.albedo_texture) и сэмплер (model.sampler) с привязкой 3 в наборе дескрипторов этой модели.
+    for (auto& model : models) {
+        VkDescriptorSetAllocateInfo alloc_info {
+            .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = descriptor_pool,
+            .descriptorSetCount = 1, .pSetLayouts = &descriptor_set_layout,
+        };
+        if (vkAllocateDescriptorSets(device, &alloc_info, &model.descriptor_set) != VK_SUCCESS) {
+            throw std::runtime_error("failed to allocate descriptor sets!");
+        }
+        VkDescriptorBufferInfo scene_buffer_info{ scene_uniforms_buffer->buffer, 0, sizeof(SceneUniforms) };
+        VkDescriptorBufferInfo model_buffer_info{ model_uniforms_buffer->buffer, 0, sizeof(ModelUniforms) };
+        VkDescriptorBufferInfo light_ssbo_info{ light_ssbo_buffer->buffer, 0, VK_WHOLE_SIZE };
+        VkDescriptorImageInfo albedo_image_info{ model.sampler, model.albedo_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo specular_image_info{ model.sampler, model.specular_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkDescriptorImageInfo emissive_image_info{ model.sampler, model.emissive_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+        VkWriteDescriptorSet write_sets[] = {
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &scene_buffer_info },
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &model_buffer_info },
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, nullptr, &light_ssbo_info },
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 3, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &albedo_image_info, nullptr },
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specular_image_info, nullptr },
+            { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &emissive_image_info, nullptr }
+        };
+        vkUpdateDescriptorSets(device, 6, write_sets, 0, nullptr);
+    }
 }
 
 void shutdown() {
 	VkDevice& device = veekay::app.vk_device;
 
-	vkDestroySampler(device, missing_texture_sampler, nullptr);
-	delete missing_texture;
+	
+	// vkDestroySampler(device, missing_texture_sampler, nullptr);
+	// delete missing_texture;
+    delete texture_lenna; 
+    delete texture_checker;
+    delete texture_white; 
+    delete texture_black; 
+    delete texture_emissive_example;
+    vkDestroySampler(device, sampler_linear, nullptr);
+    vkDestroySampler(device, sampler_nearest, nullptr);
 
 	delete cube_mesh.index_buffer;
 	delete cube_mesh.vertex_buffer;
@@ -651,6 +667,7 @@ void shutdown() {
 
 // работа CPU
 void update(double time) {
+    
     ImGui::Begin("Lighting");
 
     ImGui::Text("Ambient");
@@ -693,6 +710,11 @@ void update(double time) {
     ImGui::ColorEdit3("Color##Spot", &spot_light.color.x);
     ImGui::SliderFloat("Inner CutOff (Deg)", &spot_light.inner_cutOff, 0.0f, 45.0f);
     ImGui::SliderFloat("Outer CutOff (Deg)", &spot_light.outer_cutOff, 0.0f, 45.0f);
+
+	ImGui::Text("Spot Light Attenuation");
+	ImGui::SliderFloat("Const##Spot", &spot_light.constant, 0.0f, 2.0f); 
+	ImGui::SliderFloat("Lin##Spot", &spot_light.linear, 0.0f, 1.0f);     
+	ImGui::SliderFloat("Quad##Spot", &spot_light.quadratic, 0.0f, 1.0f); 
 
     ImGui::End();
 
@@ -751,7 +773,7 @@ void update(double time) {
     float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
     *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
 
-    // MERGE: Используем более правильный способ копирования в Dynamic UBO с выравниванием из нового каркаса
+    
 	const size_t alignment =
 		veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
 
@@ -826,29 +848,29 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 
 		uint32_t dyn_offset = i * model_uniforms_alignment; // MERGE: Используем выровненное смещение (вычисляем то же самое смещение, что в update)
 
-		// говорим GPU, какую таблицу ссылок использовать (descriptor_set)
-		// шейдеры теперь знают, где искать view_projection, model, и массив point_lights
-		// dyn_offset - динамический UBO. Подключаем 1 большой model_uniforms_buffer, но для каждого объекта
-		// указываем смещение. GPU будет читать данные для i-го объекта, начиная с i * sizeof(ModelUniforms) байта в этом буфере
-		vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
+		
+		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
 
-		// Пуш-константы
+		// Добавляем время в пуш-константы
 		struct Push {
-            veekay::vec3 cam; float _p0; // позиция камеры
-            veekay::vec3 amb; float _p1; // Цвет ambient-света
-            veekay::vec3 dir; float _p2; // Направление directional-света
-            veekay::vec3 dcol; float _p3; // Цвет directional-света
+            veekay::vec3 cam; float time;
+            veekay::vec3 amb; float _p1;
+            veekay::vec3 dir; float _p2;
+            veekay::vec3 dcol; float _p3;
 
             veekay::vec3 s_pos; float _s_p0;
             veekay::vec3 s_dir; float _s_p1;
             veekay::vec3 s_col; float _s_p2;
             float s_inner;
             float s_outer;
+			float s_const; float s_lin; float s_quad; 
             float _s_p3;
             float _s_p4;
         };
 		Push push = {
-            camera.position, 0,
+			// glfwGetTime - возвращает количество секунд, прошедших с момента запуска программы.
+            camera.position, (float)glfwGetTime(),  //передача времени в шейдер (там используется для анимации, чтобы пол плыл)
             ambient_light.color, 0,
             directional_light.direction, 0,
             directional_light.color, 0,
@@ -856,8 +878,11 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
             spot_light.position, 0,
             spot_light.direction, 0,
             spot_light.color, 0,
-            (float)cos(toRadians(spot_light.inner_cutOff)), // передаем косинусы
+            (float)cos(toRadians(spot_light.inner_cutOff)), 
             (float)cos(toRadians(spot_light.outer_cutOff)),
+			spot_light.constant,
+			spot_light.linear,
+			spot_light.quadratic,
             0, 0
         };
 
