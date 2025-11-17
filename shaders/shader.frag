@@ -137,10 +137,13 @@ void main() {
 
     // Используем (искаженные) координаты для чтения цвета из текстур.
     // .rgb отбрасывает альфа-канал, оставляя только цвет.
+    // через функцию texture мы берем цвет из текстуры
     vec3 albedo = texture(albedo_sampler, distorted_uv).rgb * model.albedo_color;
     
     // Сэмплируем specular-карту. Белые участки будут сильно бликовать, черные - нет.
     // Specular-карта используется для модуляции силы блика
+    // Значение цвета из specular_sampler (обычно от 0 до 1) умножается на цвет блика в формуле освещения. 
+    // Если в specular-текстуре пиксель черный (0), блика не будет. Если белый (1) — блик будет максимальной силы.
     vec3 specular = texture(specular_sampler, distorted_uv).rgb * model.specular_color;
 
     vec3 N = normalize(f_normal);

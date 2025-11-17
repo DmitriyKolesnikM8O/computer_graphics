@@ -17,10 +17,35 @@
 #include <vulkan/vulkan_core.h>
 #include <lodepng.h>
 
+
+/*
+В этой лабораторной работе вам предстоит загрузить изображение из файла, создать текстуру из изображения и, используя текстурные координаты, 
+а также сэмплеры, наложить текстуру на объекты.
+
+Базовое условие на 3:
+	- Загрузить изображение из файла (желательно, чтобы ширина и высота изображения имели значение степени двойки, сами знаете зачем)
+	- Создать текстуру из изображения (использовать veekay::graphics::Texture)
+	- Создать объект сэмплера и задать разумные параметры сэмплирования 
+	- Записать в набор дескрипторов новую привязку (дескриптор – изображение+сэмплер), чтобы его увидел фрагментный шейдер
+	- Вершины объектов должны содержать текстурные координаты
+	- Фрагментный шейдер должен сэмплировать текстуру, используя текстурные координаты, которые были переданы из вершинного шейдера
+Базовое условие на 4:
+	- Реализовать использование разных текстур (VkImageView) и сэмплеров (VkSampler) моделями на сцене (с помощью использования разных наборов 
+	дескрипторов для каждой текстуры или набора текстур, то есть “материала”)
+
+Дополнительные задания:
+1. Сделайте нетривиальное сэмплирование текстуры в шейдере (можно модулировать входящие текстурные координаты какой-либо сложной функцией в 
+шейдере; также можно сэмплировать много раз и смешивать цвета множества текселей по нетривиальной схеме)
+2. Реализуйте две (или больше) дополнительные текстуры, описывающие материал, например specular текстуру (для определенных участков, где будут видны блики) и emissive текстуру (для участков, которые будут игнорировать просчет освещения и затенения, они будут светиться в темноте)
+
+*/
+
 // загружаем изображение из файла
 veekay::graphics::Texture* load_texture_from_file(const char* path, VkCommandBuffer cmd) {
     unsigned width, height;
     std::vector<unsigned char> image_data;
+	//lodepng - PNG image decoder and encoder
+	// читаем png и заполняем image_data данными о пикселях
     unsigned error = lodepng::decode(image_data, width, height, path);
     if (error) {
         std::cerr << "LodePNG error: " << lodepng_error_text(error) << std::endl;
@@ -95,7 +120,7 @@ struct Model {
     veekay::graphics::Texture* specular_texture;
     veekay::graphics::Texture* emissive_texture;
     VkSampler sampler;
-    VkDescriptorSet descriptor_set;
+    VkDescriptorSet descriptor_set; // у каждой модели свой
 };
 
 struct Camera {
@@ -273,13 +298,18 @@ void initialize(VkCommandBuffer cmd) {
 
 	// загружаем текстуру и создаем сэмплеры
     texture_lenna = load_texture_from_file("assets/lenna.png", cmd);
+	// белый, черный, черный, белый
     uint32_t checker_pixels[] = { 0xffffffff, 0xff000000, 0xff000000, 0xffffffff };
+	
+	// создаем объект текстуры на основе checker_pixels
+	// VK_FORMAT_R8G8B8A8_UNORM: R8G8B8A8 - Данные для каждого пикселя — это 4 компонента по 8 бит: сначала Красный, потом Зеленый, потом Синий, потом Альфа
+	// UNORM - Это беззнаковые нормализованные значения. Когда будешь использовать их в шейдере, считай, что байт 0 — это 0.0, а байт 255 — это 1.0
     texture_checker = new veekay::graphics::Texture(cmd, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, checker_pixels);
     uint32_t white_pixel = 0xffffffff;
     texture_white = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &white_pixel);
     uint32_t black_pixel = 0xff000000;
     texture_black = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &black_pixel);
-    uint32_t emissive_pixel = 0xff00ffff;
+    uint32_t emissive_pixel = 0xff00ffff; // желтый
     texture_emissive_example = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &emissive_pixel);
 
 	// создаем 2 сэмплера (linear - для сглаженного (размытого) изображения; nearest - для четкого, пиксельного отображения)
@@ -441,6 +471,7 @@ void initialize(VkCommandBuffer cmd) {
 		// массив, где каждый элемент описывает 1 ресурс, доступный шейдеру
 		// В шейдерах будет ресурс в binding = 0. Это будет UNIFORM_BUFFER. Он будет один (descriptorCount = 1). Доступ к нему нужен и в вершинном, и во фрагментном шейдере
 		// + привязки для текстур (в слоте 3 COMBINED_IMAGE_SAMPLER)
+		// по адресу 3 лежит текстура + сэмплер
 		VkDescriptorSetLayoutBinding bindings[] = {
 			{ 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT },
 			{ 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT }, // для Description Set будет SSBO
@@ -606,20 +637,26 @@ void initialize(VkCommandBuffer cmd) {
     // настраиваем персональные Description Set в цикле
 	// создаем VkWriteDescriptorSet, который связывает конкретную текстуру 
 	// (model.albedo_texture) и сэмплер (model.sampler) с привязкой 3 в наборе дескрипторов этой модели.
+	// проходим по всем моделям и для каждой заполняем ее descriptor_set
     for (auto& model : models) {
         VkDescriptorSetAllocateInfo alloc_info {
             .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO, .descriptorPool = descriptor_pool,
             .descriptorSetCount = 1, .pSetLayouts = &descriptor_set_layout,
         };
+		// выделяем под дескриптор сет память
         if (vkAllocateDescriptorSets(device, &alloc_info, &model.descriptor_set) != VK_SUCCESS) {
             throw std::runtime_error("failed to allocate descriptor sets!");
         }
         VkDescriptorBufferInfo scene_buffer_info{ scene_uniforms_buffer->buffer, 0, sizeof(SceneUniforms) };
         VkDescriptorBufferInfo model_buffer_info{ model_uniforms_buffer->buffer, 0, sizeof(ModelUniforms) };
         VkDescriptorBufferInfo light_ssbo_info{ light_ssbo_buffer->buffer, 0, VK_WHOLE_SIZE };
+
+		// указываем, какую текстуру и какой сэмплер взять
         VkDescriptorImageInfo albedo_image_info{ model.sampler, model.albedo_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo specular_image_info{ model.sampler, model.specular_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
         VkDescriptorImageInfo emissive_image_info{ model.sampler, model.emissive_texture->view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL };
+		
+		// создаем запись для привязки (связываем реальную текстуру и сэмплер с этим адресом)
         VkWriteDescriptorSet write_sets[] = {
             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 0, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, nullptr, &scene_buffer_info },
             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 1, 0, 1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, nullptr, &model_buffer_info },
@@ -628,6 +665,8 @@ void initialize(VkCommandBuffer cmd) {
             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 4, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &specular_image_info, nullptr },
             { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, model.descriptor_set, 5, 0, 1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, &emissive_image_info, nullptr }
         };
+
+		// заполняем дескриптор сет данными нашей модели
         vkUpdateDescriptorSets(device, 6, write_sets, 0, nullptr);
     }
 }
@@ -850,6 +889,7 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 
 		
 		// vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &descriptor_set, 1, &dyn_offset);
+		// переключаем дескрипторы
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
 
 		// Добавляем время в пуш-константы

@@ -2,11 +2,11 @@
 
 layout (location = 0) in vec3 v_position; // сюда GPU подает позицию одной вершины из буфера
 layout (location = 1) in vec3 v_normal;
-layout (location = 2) in vec2 v_uv;
+layout (location = 2) in vec2 v_uv; // получаем uv из буфера вершин
 
 layout (location = 0) out vec3 f_position;
 layout (location = 1) out vec3 f_normal;
-layout (location = 2) out vec2 f_uv;
+layout (location = 2) out vec2 f_uv; // объявляем канал для передачи дальше
 
 
 // Данные, одинаковые для всех вершин в рамках одного объекта.
@@ -32,5 +32,5 @@ void main() {
 	// также передаем позицию и нормаль в мировых координатах дальше конвейеру (Rendering Pipeline)
 	f_position = position.xyz;	
 	f_normal = normal.xyz;
-	f_uv = v_uv;
+	f_uv = v_uv; 
 }
