@@ -303,7 +303,7 @@ void initialize(VkCommandBuffer cmd) {
 	
 	// создаем объект текстуры на основе checker_pixels
 	// VK_FORMAT_R8G8B8A8_UNORM: R8G8B8A8 - Данные для каждого пикселя — это 4 компонента по 8 бит: сначала Красный, потом Зеленый, потом Синий, потом Альфа
-	// UNORM - Это беззнаковые нормализованные значения. Когда будешь использовать их в шейдере, считай, что байт 0 — это 0.0, а байт 255 — это 1.0
+	// UNORM - Это беззнаковые нормализованные значения. байт 0 — это 0.0, а байт 255 — это 1.0
     texture_checker = new veekay::graphics::Texture(cmd, 2, 2, VK_FORMAT_R8G8B8A8_UNORM, checker_pixels);
     uint32_t white_pixel = 0xffffffff;
     texture_white = new veekay::graphics::Texture(cmd, 1, 1, VK_FORMAT_R8G8B8A8_UNORM, &white_pixel);
@@ -544,7 +544,7 @@ void initialize(VkCommandBuffer cmd) {
 		return;
 	}
 
-	// создание экземпляра класса  экземпляра класса Buffer (создаем на GPU быстрый буфер 64 байта для хранения view_projection)
+	// создание экземпляра класса Buffer (создаем на GPU быстрый буфер 64 байта для хранения view_projection)
 	scene_uniforms_buffer = new veekay::graphics::Buffer(
 		sizeof(SceneUniforms), nullptr, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT);
 
