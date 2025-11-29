@@ -359,6 +359,18 @@ union mat4 {
 		return result;
 	}
 
+	static mat4 ortho(float left, float right, float bottom, float top, float near, float far) {
+		veekay::mat4 result = {};
+		result[0][0] = 2.0f / (right - left);
+		result[1][1] = 2.0f / (top - bottom);
+		result[2][2] = -1.0f / (far - near); // Изменено для соответствия диапазону глубины Vulkan [0, 1]
+		result[3][0] = -(right + left) / (right - left);
+		result[3][1] = -(top + bottom) / (top - bottom);
+		result[3][2] = -near / (far - near); // Изменено для Vulkan
+		result[3][3] = 1.0f;
+		return result;
+	}
+
 	static mat4 rotation(vec3 axis, float angle) {
 		mat4 result{};
 

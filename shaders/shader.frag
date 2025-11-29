@@ -5,6 +5,9 @@ layout(location=0) in vec3 f_position; // сюда приходит из рас�
 layout(location=1) in vec3 f_normal; // сюда приходит интерполированная нормаль
 layout(location=2) in vec2 f_uv;     // сюда приходят интерполированные UV-координаты от вершинного шейдера
 
+// LAB 4: Получаем позицию в пространстве света
+layout(location=3) in vec4 f_light_space_pos;
+
 layout(set=0, binding=1) uniform ModelUniforms {
     mat4 model;
     vec3 albedo_color; // Этот цвет будет умножаться на цвет из текстуры (тинтирование)
@@ -21,6 +24,10 @@ layout(set=0, binding=1) uniform ModelUniforms {
 layout(set=0, binding=3) uniform sampler2D albedo_sampler;
 layout(set=0, binding=4) uniform sampler2D specular_sampler;
 layout(set=0, binding=5) uniform sampler2D emissive_sampler;
+
+// LAB 4: Новая текстура - карта теней.
+// sampler2DShadow - специальный тип для карт теней со сравнением.
+layout(set=0, binding=6) uniform sampler2DShadow shadow_map_sampler;
 
 struct PointLight {
     vec3 position;
@@ -68,6 +75,31 @@ layout(push_constant) uniform PushConstants {
 } pc;
 
 layout(location=0) out vec4 final_color;
+
+
+// LAB 4: Функция для расчета тени
+float calculate_shadow(vec4 light_space_pos) {
+    // 1. Перспективное деление: переводим из 4D в 3D пространство
+    vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
+    // 2. Переводим координаты из диапазона [-1, 1] в диапазон [0, 1] для текстуры
+    proj_coords = proj_coords * 0.5 + 0.5;
+
+    // 3. Получаем текущую глубину пикселя от лица света
+    float current_depth = proj_coords.z;
+
+    // 4. Сэмплируем карту теней
+    // Функция texture() для sampler2DShadow автоматически сравнивает current_depth
+    // с глубиной, хранящейся в карте теней.
+    // Она вернет 1.0, если пиксель освещен, и 0.0, если в тени.
+    // Благодаря линейной фильтрации сэмплера, она также вернет промежуточные значения на краях тени, создавая мягкость.
+    float shadow = texture(shadow_map_sampler, vec3(proj_coords.xy, current_depth));
+    
+    return shadow;
+}
+
+
+
+
 
 // Модель освещения Блинн-Фонга
 // N - нормаль, V - вектор К камере, L - вектор К свету
@@ -152,8 +184,15 @@ void main() {
     // Начинаем расчет освещения с компонента ambient, используя цвет из albedo-текстуры
     vec3 color = pc.ambient_color * albedo; // добавляем фоновый цвет; ambient - умножение цвета окружения на цвет объекта
 
+    // LAB 4: Вычисляем фактор тени
+    float shadow = calculate_shadow(f_light_space_pos);
+    // Добавляем проверку, чтобы избежать теней "под" плоскостью
+    if (dot(N, normalize(-pc.directional_dir)) < 0.1) {
+        shadow = 1.0;
+    }
+
     vec3 dir_light_dir = normalize(-pc.directional_dir);
-    color += calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0, albedo, specular); // добавляем направленный цвет; постоянное направление цвета
+    color += shadow * calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0, albedo, specular); // добавляем направленный цвет; постоянное направление цвета
 
     // Point lights
     // добавляем точечные цвета
