@@ -1,241 +1,190 @@
-#version 460
+#version 450
 
-layout(location=0) in vec3 f_position; // сюда приходит из растеризатора интерполированная(промежут. значения на основе известных, в графике - заполнение между пикселями)
-                                       // позиция пикселя в мировых координатах 
-layout(location=1) in vec3 f_normal; // сюда приходит интерполированная нормаль
-layout(location=2) in vec2 f_uv;     // сюда приходят интерполированные UV-координаты от вершинного шейдера
+layout (location = 0) in vec3 f_position;
+layout (location = 1) in vec3 f_normal;
+layout (location = 2) in vec2 f_uv;
+layout (location = 3) in vec4 f_pos_light_space;
+layout (location = 4) in vec4 f_pos_spot_light_space[2];
 
-// LAB 4: Получаем позицию в пространстве света
-layout(location=3) in vec4 f_light_space_pos;
-
-layout(set=0, binding=1) uniform ModelUniforms {
-    mat4 model;
-    vec3 albedo_color; // Этот цвет будет умножаться на цвет из текстуры (тинтирование)
-    float shininess;
-    vec3 specular_color; // Этот цвет будет управлять цветом блика
-    float _pad;
-} model;
-
-
-// Привязываем текстуры, которые были настроены в main.cpp для каждой модели
-// binding=3 - основная текстура (альбедо/диффузная)
-// binding=4 - текстура бликов (specular)
-// binding=5 - текстура свечения (emissive)
-layout(set=0, binding=3) uniform sampler2D albedo_sampler;
-layout(set=0, binding=4) uniform sampler2D specular_sampler;
-layout(set=0, binding=5) uniform sampler2D emissive_sampler;
-
-// LAB 4: Новая текстура - карта теней.
-// sampler2DShadow - специальный тип для карт теней со сравнением.
-layout(set=0, binding=6) uniform sampler2DShadow shadow_map_sampler;
+layout (location = 0) out vec4 final_color;
 
 struct PointLight {
     vec3 position;
+    float intensity;
     vec3 color;
-    float constant;
-    float linear;
-    float quadratic;
-    float _pad;
+    float _pad0;
 };
 
-// объявляем SSBO, привязанный к слоту 2
-layout(set=0, binding=2) readonly buffer LightSSBO {
-    PointLight point_lights[8];
-    uint point_light_count;
-    vec3 _pad[3];
-} lights;
+struct SpotLight {
+    vec3 position;
+    float radius;
+    vec3 direction;
+    float angle;
+    vec3 color;
+    float _pad0;
+};
 
-
-// Добавили поле time для анимации нетривиального сэмплирования
-layout(push_constant) uniform PushConstants {
-    vec3 camera_position;
-    float time; // Время для анимации в доп. задании
-    vec3 ambient_color;
-    float _p1;
-    vec3 directional_dir;
-    float _p2;
-    vec3 directional_color;
-    float _p3;
-
-    vec3 spot_pos;
-    float _s_p0;
-    vec3 spot_dir;
-    float _s_p1;
-    vec3 spot_col;
-    float _s_p2;
-    float inner_cutOff_cos; 
-    float outer_cutOff_cos; 
-
-    float spot_constant;
-    float spot_linear;
-    float spot_quadratic;
-
-    float _s_p3;
-    float _s_p4;
-} pc;
-
-layout(location=0) out vec4 final_color;
-
-
-// LAB 4: Функция для расчета тени
-float calculate_shadow(vec4 light_space_pos) {
-    // 1. Перспективное деление
-    vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
-    // 2. Перевод в [0, 1]
-    proj_coords = proj_coords * 0.5 + 0.5;
-
-    // Если за пределами карты — света нет (или есть, зависит от логики, тут считаем что свет есть)
-    if(proj_coords.z > 1.0) return 1.0;
-
-    float current_depth = proj_coords.z;
-
-    // --- НАСТРОЙКА BIAS (Убирает полоски) ---
-    // Увеличили bias, так как у тебя большие координаты сцены.
-    // Это убьет полоски на полу наповал.
-    float bias = 0.005; 
-
-    // --- PCF (МЯГКИЕ ТЕНИ) ---
-    float shadow = 0.0;
-    // Узнаем размер одного пикселя текстуры (чтобы знать, насколько шагать)
-    // shadow_map_sampler - это sampler2DShadow, textureSize возвращает размер.
-    vec2 texelSize = 1.0 / textureSize(shadow_map_sampler, 0);
-
-    // Проходимся циклом 3x3 вокруг пикселя
-    for(int x = -1; x <= 1; ++x) {
-        for(int y = -1; y <= 1; ++y) {
-            // Берем соседние пиксели
-            float pcfDepth = texture(shadow_map_sampler, vec3(proj_coords.xy + vec2(x, y) * texelSize, current_depth - bias)); 
-            shadow += pcfDepth;
-        }
-    }
-    // Усредняем (делим на 9 выборок)
-    shadow /= 9.0;
+layout (set = 0, binding = 0, std140) uniform SceneUniforms {
+    mat4 view_projection;
+    mat4 light_view_projection;
+    vec3 camera_pos;
+    float _pad0;
     
+    vec3 ambient_color;
+    float _pad1;
+    vec3 ambient_light_intensity;
+    float _pad2;
+    
+    vec3 sun_light_direction;
+    float _pad3;
+    vec3 sun_light_color;
+    float _pad4;
+
+    uint point_light_count;
+    uint spot_light_count;
+    uint shadow_casting_spot_count;
+    float _pad5;
+    
+    mat4 spot_light_matrices[2];
+};
+
+layout (set = 0, binding = 1, std140) uniform ModelUniforms {
+    mat4 model;
+    vec3 albedo_color;
+    float _pad6;
+    vec3 specular_color;
+    float _pad7;
+    float shininess;
+};
+
+layout (set = 0, binding = 2, std430) readonly buffer PointLightsBuffer {
+    PointLight point_lights[];
+};
+
+layout (set = 0, binding = 3, std430) readonly buffer SpotLightsBuffer {
+    SpotLight spot_lights[];
+};
+
+layout (set = 1, binding = 0) uniform sampler2D texSampler;
+
+layout (set = 2, binding = 0) uniform sampler2DShadow shadowMap;
+layout (set = 2, binding = 1) uniform sampler2DShadow spotShadowMap0;
+layout (set = 2, binding = 2) uniform sampler2DShadow spotShadowMap1;
+
+// --- ФУНКЦИЯ РАСЧЕТА ТЕНИ ---
+float calculateShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir, sampler2DShadow shadowSampler) {
+    vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+    projCoords.xy = projCoords.xy * 0.5 + 0.5;
+
+    // Если за границами карты теней — света нет (или есть, зависит от логики, тут возвращаем 1.0)
+    if (projCoords.z > 1.0 || projCoords.x < 0.0 || projCoords.x > 1.0 || 
+        projCoords.y < 0.0 || projCoords.y > 1.0) {
+        return 1.0;
+    }
+
+    float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
+    float shadow = texture(shadowSampler, vec3(projCoords.xy, projCoords.z - bias));
+
     return shadow;
 }
 
 
-
-
-
-// Модель освещения Блинн-Фонга
-// N - нормаль, V - вектор К камере, L - вектор К свету
-// LAB 3: Функция модифицирована для приема цвета альбедо и спекуляра в качестве параметров
-vec3 calculate_blinn_phong(vec3 N, vec3 V, vec3 L, vec3 light_color, float attenuation, vec3 albedo, vec3 specular) {
-    float diff = max(dot(N, L), 0.0); // диффузный компонент (имитация света на матовых поверхностях)
-    vec3 H = normalize(V + L); // вычисляем вектор полупути
-    float spec = pow(max(dot(N, H), 0.0), model.shininess); // вычисляем блик (имитация света на глянцевых поверхностях)
+// Считает диффузную и спекулярную составляющие
+vec3 calculateBlinnPhong(vec3 lightDir, vec3 lightColor, vec3 normal, vec3 viewDir, vec3 albedo) {
+    // Diffuse
+    float diff = max(dot(normal, lightDir), 0.0);
     
-    // Вместо глобальных model.albedo_color/specular_color используем переданные значения из текстур
-    return light_color * attenuation * (albedo * diff + specular * spec);
+    // Оптимизация: если свет светит в "спину", нет смысла считать блики
+    if (diff == 0.0) return vec3(0.0);
+
+    vec3 diffuse = albedo * lightColor * diff;
+
+    // Specular (Blinn-Phong uses Half-Vector)
+    vec3 halfDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normal, halfDir), 0.0), shininess);
+    vec3 specular = specular_color * lightColor * spec;
+
+    // Чем больше угол между взглядом и нормалью (край объекта), тем ярче.
+    // 1.0 - dot(N, V) дает "ободок".
+    float rimFactor = 1.0 - max(dot(normal, viewDir), 0.0);
+    // Возводим в степень (напр. 3 или 4), чтобы ободок был тонким.
+    rimFactor = pow(rimFactor, 4.0);
+    // Делаем его слабым (0.3) и цвета света
+    vec3 rim = lightColor * rimFactor * 0.3 * albedo;
+
+    return diffuse + specular;
 }
 
-// делаем прожекторный свет; помимо вызова Блинна-Фонга, проверяем, попадает ли пиксель в конус света, вычисляем
-// интенсивность с учетом плавных краев
-vec3 calculate_spot_light(vec3 N, vec3 V, vec3 albedo, vec3 specular) {
-    vec3 light_vec = pc.spot_pos - f_position;
-    float dist = length(light_vec);
-    
-    if (dist == 0.0) return vec3(0.0);
-    
-    
-    vec3 L = light_vec / dist;
-    
-    vec3 D = pc.spot_dir; 
-    
-    float theta = dot(-L, D);
-    
-    // float constant = 1.0;
-    // float linear = 0.14; 
-    // float quadratic = 0.07;
+void main() {
+    vec3 normal = normalize(f_normal);
+    vec3 view_dir = normalize(camera_pos - f_position);
 
-    float constant = pc.spot_constant;
-    float linear = pc.spot_linear;
-    float quadratic = pc.spot_quadratic;
-    float denominator = constant + linear * dist + quadratic * dist * dist;
-    float attenuation = 1.0 / max(denominator, 0.00001);
+    vec4 texColor = texture(texSampler, f_uv);
+    vec3 albedoWithTexture = albedo_color * texColor.rgb;
     
-    float inner_cos = pc.inner_cutOff_cos;
-    float outer_cos = pc.outer_cutOff_cos;
-    float epsilon = inner_cos - outer_cos; 
+    // 1. Ambient (Фоновое освещение)
+    vec3 color = ambient_light_intensity * albedoWithTexture;
+
+    // 2. Sun (Directional Light)
+    vec3 sun_dir = normalize(-sun_light_direction);
     
-    float intensity = 0.0;
+    // Считаем тень от солнца
+    float shadowFactor = calculateShadow(f_pos_light_space, normal, sun_dir, shadowMap);
     
-    if (theta > outer_cos) {
-        if (epsilon > 0.0001) {
-            intensity = clamp((theta - outer_cos) / epsilon, 0.0, 1.0);
-        } else {
-            intensity = (theta >= inner_cos) ? 1.0 : 0.0;
+    // Считаем свет и применяем тень
+    color += calculateBlinnPhong(sun_dir, sun_light_color, normal, view_dir, albedoWithTexture) * shadowFactor;
+
+    // 3. Point Lights (Точечные)
+    for (uint i = 0; i < point_light_count; ++i) {
+        PointLight light = point_lights[i];
+        vec3 light_vec = light.position - f_position;
+        float distance = length(light_vec);
+        vec3 ldir = normalize(light_vec);
+
+        // Затухание
+        float light_falloff = light.intensity / (distance * distance + 0.0001);
+        
+        color += calculateBlinnPhong(ldir, light.color, normal, view_dir, albedoWithTexture) * light_falloff;
+    }
+
+    // 4. Spot Lights (Прожекторы)
+    for (uint i = 0; i < spot_light_count; ++i) {
+        SpotLight light = spot_lights[i];
+        vec3 light_vec = light.position - f_position;
+        float distance = length(light_vec);
+
+        if (distance > light.radius) continue;
+
+        vec3 ldir = normalize(light_vec);
+        vec3 spot_dir = normalize(light.direction);
+        
+        // Проверка угла конуса
+        float theta = dot(-ldir, spot_dir);
+        float cutoff_cos = cos(light.angle);
+
+        if (theta > cutoff_cos) {
+            // Мягкие края прожектора
+            float distance_attenuation = clamp(1.0 - (distance / light.radius), 0.0, 1.0);
+            float outer_cutoff = cos(light.angle);
+            float inner_cutoff = cos(light.angle * 0.8);
+            float epsilon = inner_cutoff - outer_cutoff;
+            float spot_intensity = clamp((theta - outer_cutoff) / epsilon, 0.0, 1.0);
+            
+            float total_attenuation = distance_attenuation * spot_intensity;
+
+            // Тени от прожекторов
+            float spotShadow = 1.0;
+            if (i < shadow_casting_spot_count) {
+                if (i == 0) {
+                    spotShadow = calculateShadow(f_pos_spot_light_space[0], normal, ldir, spotShadowMap0);
+                } else if (i == 1) {
+                    spotShadow = calculateShadow(f_pos_spot_light_space[1], normal, ldir, spotShadowMap1);
+                }
+            }
+
+            color += calculateBlinnPhong(ldir, light.color, normal, view_dir, albedoWithTexture) * total_attenuation * spotShadow;
         }
     }
 
-    return calculate_blinn_phong(N, V, L, pc.spot_col, attenuation * intensity, albedo, specular);
-}
-
-// логика расчета цвета на основе модели Блинн-Фонга
-// разные типы источников света: ambient - рассеянный; directional - направленный; point - точечные; spot - прожектор
-void main() {
-    // Искажаем входящие текстурные координаты f_uv с помощью синуса и косинуса,
-    // используя время (pc.time), чтобы создать анимированный эффект "волн" или "искажения".
-    vec2 distorted_uv = f_uv;
-    float distortion_strength = 0.05; // Сила искажения
-    float distortion_speed = 2.0;    // Скорость анимации
-    float distortion_frequency = 10.0; // Частота (густота) волн
-    distorted_uv.x += sin(f_uv.y * distortion_frequency + pc.time * distortion_speed) * distortion_strength;
-    distorted_uv.y += cos(f_uv.x * distortion_frequency + pc.time * distortion_speed) * distortion_strength;
-
-    // Используем (искаженные) координаты для чтения цвета из текстур.
-    // .rgb отбрасывает альфа-канал, оставляя только цвет.
-    // через функцию texture мы берем цвет из текстуры
-    vec3 albedo = texture(albedo_sampler, distorted_uv).rgb * model.albedo_color;
-    
-    // Сэмплируем specular-карту. Белые участки будут сильно бликовать, черные - нет.
-    // Specular-карта используется для модуляции силы блика
-    // Значение цвета из specular_sampler (обычно от 0 до 1) умножается на цвет блика в формуле освещения. 
-    // Если в specular-текстуре пиксель черный (0), блика не будет. Если белый (1) — блик будет максимальной силы.
-    vec3 specular = texture(specular_sampler, distorted_uv).rgb * model.specular_color;
-
-    vec3 N = normalize(f_normal);
-    vec3 V = normalize(pc.camera_position - f_position); // вычисляем вектор от точки к камере
-    
-    // Начинаем расчет освещения с компонента ambient, используя цвет из albedo-текстуры
-    vec3 color = pc.ambient_color * albedo; // добавляем фоновый цвет; ambient - умножение цвета окружения на цвет объекта
-
-    // LAB 4: Вычисляем фактор тени
-    float shadow = calculate_shadow(f_light_space_pos);
-    // Добавляем проверку, чтобы избежать теней "под" плоскостью
-    
-    
-    //if (dot(N, normalize(-pc.directional_dir)) < 0.1) {
-    //    shadow = 1.0;
-    //}
-
-
-
-    vec3 dir_light_dir = normalize(-pc.directional_dir);
-    color += shadow * calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0, albedo, specular); // добавляем направленный цвет; постоянное направление цвета
-
-    // Point lights
-    // добавляем точечные цвета
-    // для каждого источника вычисляется направление L, затухание по закону обратных квадратов
-    for (uint i = 0; i < lights.point_light_count; ++i) {
-        vec3 light_vec = lights.point_lights[i].position - f_position;
-        float dist = length(light_vec);
-        vec3 L = normalize(light_vec);
-        float denominator = lights.point_lights[i].constant +
-                            lights.point_lights[i].linear * dist +
-                            lights.point_lights[i].quadratic * dist * dist;
-        float attenuation = 1.0 / (0.25 + denominator);
-
-        color += calculate_blinn_phong(N, V, L, lights.point_lights[i].color, attenuation, albedo, specular);
-    }
-
-    color += calculate_spot_light(N, V, albedo, specular); // добавляем прожекторный цвет
-    
-    // Сэмплируем карту свечения и просто добавляем её цвет к финальному результату.
-    // Это заставит участки объекта светиться независимо от освещения.
-    vec3 emissive = texture(emissive_sampler, distorted_uv).rgb;
-    color += emissive;
-
-    final_color = vec4(color, 1.0); // финальный цвет, который будет записан в пиксель на экране
+    final_color = vec4(color, texColor.a);
 }

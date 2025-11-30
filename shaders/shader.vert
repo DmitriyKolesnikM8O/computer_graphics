@@ -7,45 +7,55 @@ layout (location = 2) in vec2 v_uv; // получаем uv из буфера в�
 layout (location = 0) out vec3 f_position;
 layout (location = 1) out vec3 f_normal;
 layout (location = 2) out vec2 f_uv; // объявляем канал для передачи дальше
+layout (location = 3) out vec4 f_pos_light_space;
+layout (location = 4) out vec4 f_pos_spot_light_space[2];
 
-// LAB 4: Новое поле - позиция вершины в пространстве света
-layout (location = 3) out vec4 f_light_space_pos;
+layout (set = 0, binding = 0, std140) uniform SceneUniforms {
+    mat4 view_projection;
+    mat4 light_view_projection; 
+    vec3 camera_pos;
+    float _pad0;
 
+    vec3 ambient_color;
+    float _pad1;
+    vec3 ambient_light_intensity;
+    float _pad2;
 
+    vec3 sun_light_direction;
+    float _pad3;
+    vec3 sun_light_color;
+    float _pad4;
 
-// Данные, одинаковые для всех вершин в рамках одного объекта.
-// model Матрица переводит вершину из локальных координат в мировые
-// view_projection - из мировых в пространство экрана
-layout (binding = 0, std140) uniform SceneUniforms {
-	mat4 view_projection;
+    uint point_light_count;
+    uint spot_light_count;
+    uint shadow_casting_spot_count;
+    float _pad5;
+    
+    mat4 spot_light_matrices[2];
 };
-layout (binding = 1, std140) uniform ModelUniforms {
-	mat4 model;
-	vec3 albedo_color;
-	float shininess;
-	vec3 specular_color;
-	float _pad;
-};
 
-// Push-константы теперь нужны и в вершинном шейдере
-// чтобы получить матрицу света.
-// В C++ мы передаем всю структуру Push, но здесь нам нужна только матрица,
-// поэтому мы указываем ее смещение в байтах.
-layout(push_constant) uniform PushConstants {
-    layout(offset = 96) mat4 light_space_matrix;
-} pc;
+layout (set = 0, binding = 1, std140) uniform ModelUniforms {
+    mat4 model;
+    vec3 albedo_color;
+    float _pad6;
+    vec3 specular_color;
+    float _pad7;
+    float shininess;
+};
 
 void main() {
-	vec4 position_world = model * vec4(v_position, 1.0f);
-	vec4 normal_world = model * vec4(v_normal, 0.0f);
+    vec4 world_position = model * vec4(v_position, 1.0f);
+    vec4 normal = model * vec4(v_normal, 0.0f);
 
-	gl_Position = view_projection * position_world; // результат работы шейдера, вычисляется финал. позиция вершины
+    gl_Position = view_projection * world_position;
 
-	// также передаем позицию и нормаль в мировых координатах дальше конвейеру (Rendering Pipeline)
-	f_position = position_world.xyz;	
-	f_normal = normal_world.xyz;
-	f_uv = v_uv;
+    f_position = world_position.xyz;
+    f_normal = normal.xyz;
+    f_uv = v_uv;
 
-	// LAB 4: Вычисляем позицию в пространстве света и передаем ее дальше
-    f_light_space_pos = pc.light_space_matrix * position_world;
+    f_pos_light_space = light_view_projection * world_position;
+    
+    for (uint i = 0; i < 2; ++i) {
+        f_pos_spot_light_space[i] = spot_light_matrices[i] * world_position;
+    }
 }

@@ -359,15 +359,20 @@ union mat4 {
 		return result;
 	}
 
-	static mat4 ortho(float left, float right, float bottom, float top, float near, float far) {
-		veekay::mat4 result = {};
+	static mat4 ortho(float left, float right, float bottom, float top, float zNear, float zFar) {
+		veekay::mat4 result{};
+		
+		// ВАЖНО: friend использует (bottom - top), а у тебя было (top - bottom)
+		// Это переворачивает ось Y для Vulkan
 		result[0][0] = 2.0f / (right - left);
-		result[1][1] = 2.0f / (top - bottom);
-		result[2][2] = -1.0f / (far - near); // Изменено для соответствия диапазону глубины Vulkan [0, 1]
-		result[3][0] = -(right + left) / (right - left);
-		result[3][1] = -(top + bottom) / (top - bottom);
-		result[3][2] = -near / (far - near); // Изменено для Vulkan
+		result[1][1] = 2.0f / (bottom - top); 
+		result[2][2] = 1.0f / (zNear - zFar);
 		result[3][3] = 1.0f;
+
+		result[3][0] = -(right + left) / (right - left);
+		result[3][1] = -(bottom + top) / (bottom - top);
+		result[3][2] = zNear / (zNear - zFar);
+
 		return result;
 	}
 
