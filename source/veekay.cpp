@@ -178,8 +178,9 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 		}; 
 
 		auto selector_result = physical_device_selector.set_surface(vk_surface)
-		                                               .set_required_features(device_features)
-		                                               .select();
+                                               .set_required_features(device_features)
+                                               .add_required_extension("VK_KHR_dynamic_rendering") // <--- ДОБАВИЛ СЮДА
+                                               .select();
 		if (!selector_result) {
 			std::cerr << selector_result.error().message() << '\n';
 			return 1;
@@ -189,7 +190,18 @@ int veekay::run(const veekay::ApplicationInfo& app_info) {
 
 		{
 			// подключаемся к физической видеокарте, создавая логическое устройство
+			// 1. Создаем структуру настройки Dynamic Rendering
+			VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features{
+				.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES,
+				.dynamicRendering = VK_TRUE,
+			};
+
+			// 2. Создаем билдер
 			vkb::DeviceBuilder device_builder(physical_device);
+
+			// 3. Явно добавляем расширение (так как Instance запрошен как 1.2)
+			//    и передаем структуру с включенной галочкой через pNext
+			device_builder.add_pNext(&dynamic_rendering_features);
 
 			auto result = device_builder.build();
 

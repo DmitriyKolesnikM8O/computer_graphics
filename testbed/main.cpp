@@ -168,6 +168,8 @@ inline namespace {
 		.position = {0.0f, -0.5f, -3.0f}
 	};
 
+	float global_time = 0.0f;
+
 	std::vector<Model> models;
 
 	AmbientLight ambient_light;
@@ -194,8 +196,6 @@ inline namespace {
 	VkShaderModule shadow_vertex_shader_module;
 	VkPipelineLayout shadow_pipeline_layout;
 	VkPipeline shadow_pipeline;
-	VkRenderPass shadow_render_pass;
-	VkFramebuffer shadow_framebuffer;
 
 	veekay::graphics::Buffer* scene_uniforms_buffer;
 	veekay::graphics::Buffer* model_uniforms_buffer;
@@ -454,50 +454,6 @@ void initialize(VkCommandBuffer cmd) {
 	
 
 // vvvv ВСТАВЬ ЭТОТ БЛОК НА МЕСТО УДАЛЕННЫХ vvvv
-	// --- Создание Render Pass и Framebuffer для теней ---
-    {
-        VkAttachmentDescription depthAttachment{};
-        depthAttachment.format = shadow_map_texture->format;
-        depthAttachment.samples = VK_SAMPLE_COUNT_1_BIT;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-        depthAttachment.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
-        depthAttachment.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-        depthAttachment.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        depthAttachment.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
-
-        VkAttachmentReference depthAttachmentRef{};
-        depthAttachmentRef.attachment = 0;
-        depthAttachmentRef.layout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-
-        VkSubpassDescription subpass{};
-        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
-        subpass.pDepthStencilAttachment = &depthAttachmentRef;
-
-        VkRenderPassCreateInfo renderPassInfo{};
-        renderPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-        renderPassInfo.attachmentCount = 1;
-        renderPassInfo.pAttachments = &depthAttachment;
-        renderPassInfo.subpassCount = 1;
-        renderPassInfo.pSubpasses = &subpass;
-
-        if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &shadow_render_pass) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create shadow render pass!");
-        }
-
-        VkFramebufferCreateInfo framebufferInfo{};
-        framebufferInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
-        framebufferInfo.renderPass = shadow_render_pass;
-        framebufferInfo.attachmentCount = 1;
-        framebufferInfo.pAttachments = &shadow_map_texture->view;
-        framebufferInfo.width = SHADOW_MAP_SIZE;
-        framebufferInfo.height = SHADOW_MAP_SIZE;
-        framebufferInfo.layers = 1;
-
-        if (vkCreateFramebuffer(device, &framebufferInfo, nullptr, &shadow_framebuffer) != VK_SUCCESS) {
-            throw std::runtime_error("failed to create shadow framebuffer!");
-        }
-    }
 
 	// --- Создание РАЗДЕЛЬНЫХ Pipeline Layouts ---
     // Layout для ОСНОВНОГО конвейера (с push-константой для обоих шейдеров)
@@ -510,13 +466,15 @@ void initialize(VkCommandBuffer cmd) {
     {
         VkPushConstantRange shadow_push_range{ 
     .stageFlags = VK_SHADER_STAGE_VERTEX_BIT, 
-    .offset = 96, 
-    .size = 64 
+    .offset = 0, 
+    .size = sizeof(veekay::mat4) 
 };
 VkPipelineLayoutCreateInfo shadow_layout_info{ 
     .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO, 
     .setLayoutCount = 1, 
     .pSetLayouts = &descriptor_set_layout,
+	.pushConstantRangeCount = 1,
+	.pPushConstantRanges = &shadow_push_range,
 };
 		if (vkCreatePipelineLayout(device, &shadow_layout_info, nullptr, &shadow_pipeline_layout) != VK_SUCCESS) { std::cerr << "Failed to create shadow pipeline layout\n"; return; }
     }
@@ -532,13 +490,31 @@ VkPipelineLayoutCreateInfo shadow_layout_info{
         VkDynamicState dynamicStates[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
         VkPipelineDynamicStateCreateInfo dynamicState { .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO, .dynamicStateCount = 2, .pDynamicStates = dynamicStates };
         VkPipelineColorBlendStateCreateInfo shadow_blend_info { .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO }; // Пустой, т.к. цвета нет
+
+
+		VkPipelineRenderingCreateInfo shadow_rendering_info{};
+		shadow_rendering_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+		shadow_rendering_info.colorAttachmentCount = 0;               // только depth
+		shadow_rendering_info.pColorAttachmentFormats = nullptr;
+		shadow_rendering_info.depthAttachmentFormat = shadow_map_texture->format;
+		shadow_rendering_info.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
         
-        VkGraphicsPipelineCreateInfo pipeline_info {
-            .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO, .stageCount = 1, .pStages = &shadow_stage_info,
-            .pVertexInputState = &shadow_input_state_info, .pInputAssemblyState = &assembly_state_info, .pViewportState = &viewportState,
-            .pRasterizationState = &raster_info, .pMultisampleState = &sample_info, .pDepthStencilState = &depth_info, .pColorBlendState = &shadow_blend_info,
-            .pDynamicState = &dynamicState, .layout = shadow_pipeline_layout, .renderPass = shadow_render_pass
-        };
+		VkGraphicsPipelineCreateInfo pipeline_info {
+			.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+			.pNext = &shadow_rendering_info,                          // ← ДОБАВЛЕНО
+			.stageCount = 1,
+			.pStages = &shadow_stage_info,
+			.pVertexInputState = &shadow_input_state_info,
+			.pInputAssemblyState = &assembly_state_info,
+			.pViewportState = &viewportState,
+			.pRasterizationState = &raster_info,
+			.pMultisampleState = &sample_info,
+			.pDepthStencilState = &depth_info,
+			.pColorBlendState = &shadow_blend_info,
+			.pDynamicState = &dynamicState,
+			.layout = shadow_pipeline_layout,
+			.renderPass = VK_NULL_HANDLE                               // ← БЫЛ shadow_render_pass
+		};
         if (vkCreateGraphicsPipelines(device, nullptr, 1, &pipeline_info, nullptr, &shadow_pipeline) != VK_SUCCESS) {
             std::cerr << "Failed to create shadow pipeline\n";
             veekay::app.running = false;
@@ -547,20 +523,37 @@ VkPipelineLayoutCreateInfo shadow_layout_info{
     }
 // ^^^^
 
-	VkGraphicsPipelineCreateInfo info{
-		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-		.stageCount = 2,
-		.pStages = stage_infos, // будут использоваться 2 шейдерные программы (vertex_shader_module и fragment_shader_module)
-		.pVertexInputState = &input_state_info, // связываемся с шейдеров
-		.pInputAssemblyState = &assembly_state_info,
-		.pViewportState = &viewport_info,
-		.pRasterizationState = &raster_info, // настройки растеризации
-		.pMultisampleState = &sample_info,
-		.pDepthStencilState = &depth_info, // настраиваем глубину
-		.pColorBlendState = &blend_info,
-		.layout = pipeline_layout,
-		.renderPass = veekay::app.vk_render_pass,
-	};
+	// Говорим Вулкану: "Разреши менять размер экрана и ножницы прямо во время рендера"
+    VkDynamicState main_dynamic_states[] = { 
+        VK_DYNAMIC_STATE_VIEWPORT, 
+        VK_DYNAMIC_STATE_SCISSOR 
+    };
+
+    VkPipelineDynamicStateCreateInfo main_dynamic_state_info{
+        .sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = 2,
+        .pDynamicStates = main_dynamic_states,
+    };
+    // -----------------------------------------------------------
+
+    VkGraphicsPipelineCreateInfo info{
+        .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = 2,
+        .pStages = stage_infos,
+        .pVertexInputState = &input_state_info,
+        .pInputAssemblyState = &assembly_state_info,
+        .pViewportState = &viewport_info,
+        .pRasterizationState = &raster_info,
+        .pMultisampleState = &sample_info,
+        .pDepthStencilState = &depth_info,
+        .pColorBlendState = &blend_info,
+        
+        // !!! ДОБАВЬ ВОТ ЭТУ СТРОКУ !!!
+        .pDynamicState = &main_dynamic_state_info, 
+
+        .layout = pipeline_layout,
+        .renderPass = veekay::app.vk_render_pass,
+    };
 
 	if (vkCreateGraphicsPipelines(device, nullptr, 1, &info, nullptr, &pipeline) != VK_SUCCESS) {
 		std::cerr << "Failed to create Vulkan pipeline\n";
@@ -689,14 +682,15 @@ VkPipelineLayoutCreateInfo shadow_layout_info{
 		// заполняем дескриптор сет данными нашей модели
         vkUpdateDescriptorSets(device, 7, write_sets, 0, nullptr);
     }
+	std::cout << "Shadow Texture created: " << shadow_map_texture << std::endl;
+    std::cout << "Shadow Pipeline created: " << shadow_pipeline << std::endl;
+    std::cout << "Initialization COMPLETE" << std::endl;
+} // конец initialize
 }
 
 void shutdown() {
     VkDevice& device = veekay::app.vk_device;
 
-    // Очистка ресурсов для теней
-    vkDestroyFramebuffer(device, shadow_framebuffer, nullptr);
-    vkDestroyRenderPass(device, shadow_render_pass, nullptr);
     delete shadow_map_texture;
     vkDestroySampler(device, shadow_map_sampler, nullptr);
     vkDestroyPipeline(device, shadow_pipeline, nullptr);
@@ -719,8 +713,46 @@ void shutdown() {
     vkDestroyShaderModule(device, vertex_shader_module, nullptr);
 }
 
+struct Push {
+    // --- Основной шейдер (offset 0 - 96) ---
+    veekay::vec3 camera_position;
+    float time; 
+
+    veekay::vec3 ambient_color;
+    float _pad1; 
+
+    veekay::vec3 directional_dir;
+    float _pad2; 
+
+    veekay::vec3 directional_color;
+    float _pad3; 
+    
+    // Сейчас мы заняли 64 байта.
+    // Твой Shadow Pipeline настроен на offset 96.
+    // Нам нужно пропустить 32 байта (64 + 32 = 96).
+    float _padding_gap[8]; 
+
+    // --- Теневой шейдер (начинается с offset 96) ---
+    veekay::mat4 light_space_matrix; // Это пойдет в shadow.vert
+
+    // --- Доп данные для основного шейдера (Spot lights и т.д.) ---
+    veekay::vec3 spot_pos; 
+    float inner_cutOff_cos;
+    
+    veekay::vec3 spot_dir; 
+    float outer_cutOff_cos;
+    
+    veekay::vec3 spot_col;
+    float spot_constant;
+    
+    float spot_linear;
+    float spot_quadratic;
+};
+
 // работа CPU
 void update(double time) {
+
+	global_time = (float)time;
     
     ImGui::Begin("Lighting");
 
@@ -845,128 +877,170 @@ void update(double time) {
 
 //записываем последовательность команд в cmd
 void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
-	vkResetCommandBuffer(cmd, 0);
-	VkCommandBufferBeginInfo begin_info{.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
-	vkBeginCommandBuffer(cmd, &begin_info);
+    // 1. ВРУЧНУЮ ЗАГРУЖАЕМ ФУНКЦИИ DYNAMIC RENDERING (Фикс сегфолта на Vulkan 1.2)
+    static PFN_vkCmdBeginRenderingKHR vkCmdBeginRenderingKHR = 
+        (PFN_vkCmdBeginRenderingKHR)vkGetDeviceProcAddr(veekay::app.vk_device, "vkCmdBeginRenderingKHR");
+    static PFN_vkCmdEndRenderingKHR vkCmdEndRenderingKHR = 
+        (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(veekay::app.vk_device, "vkCmdEndRenderingKHR");
 
-    veekay::mat4 light_space_matrix;
-    // --- ПРОХОД 1: РЕНДЕР КАРТЫ ТЕНЕЙ (SHADOW PASS) ---
-    {
-        float near_plane = 1.0f, far_plane = 15.0f;
-        veekay::mat4 light_projection = ortho(-10.0f, 10.0f, -10.0f, 10.0f, near_plane, far_plane);
-        veekay::mat4 light_view = veekay::mat4::look_at(-directional_light.direction * 5.0f, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
-        light_space_matrix = light_view * light_projection;
-
-        *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { light_space_matrix };
-
-        VkClearValue clear_depth{.depthStencil = {1.0f, 0}};
-        VkRenderPassBeginInfo rp_info{};
-        rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
-        rp_info.renderPass = shadow_render_pass;
-        rp_info.framebuffer = shadow_framebuffer;
-        rp_info.renderArea.offset = {0, 0};
-        rp_info.renderArea.extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}; // ИСПРАВЛЕНИЕ: Указываем размер
-        rp_info.clearValueCount = 1;
-        rp_info.pClearValues = &clear_depth;
-        vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
-        VkViewport viewport { .width = SHADOW_MAP_SIZE, .height = SHADOW_MAP_SIZE, .minDepth = 0.0f, .maxDepth = 1.0f };
-        VkRect2D scissor { .extent = {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE} };
-        vkCmdSetViewport(cmd, 0, 1, &viewport);
-        vkCmdSetScissor(cmd, 0, 1, &scissor);
-
-        VkDeviceSize zero_offset = 0;
-        const size_t model_uniforms_alignment = veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
-        for (size_t i = 0; i < models.size(); ++i) {
-            const Model& model = models[i];
-            vkCmdBindVertexBuffers(cmd, 0, 1, &model.mesh.vertex_buffer->buffer, &zero_offset);
-            vkCmdBindIndexBuffer(cmd, model.mesh.index_buffer->buffer, zero_offset, VK_INDEX_TYPE_UINT32);
-            uint32_t dyn_offset = i * model_uniforms_alignment;
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
-            
-            
-
-            vkCmdDrawIndexed(cmd, model.mesh.indices, 1, 0, 0, 0);
-        }
-        vkCmdEndRenderPass(cmd);
+    if (!vkCmdBeginRenderingKHR || !vkCmdEndRenderingKHR) {
+        std::cerr << "CRITICAL ERROR: Could not load Dynamic Rendering functions!" << std::endl;
+        // Чтобы не крашилось бесконечно, можно просто выйти
+        return; 
     }
 
-    // --- ПРОХОД 2: ОСНОВНОЙ РЕНДЕР СЦЕНЫ (MAIN PASS) ---
-    {
-        float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
-		*(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
+    vkResetCommandBuffer(cmd, 0);
 
-        VkRect2D renderArea = {};
-        renderArea.offset = {0, 0};
-        renderArea.extent = {veekay::app.window_width, veekay::app.window_height};
-        VkClearValue clear_color{.color = {{0.1f, 0.1f, 0.1f, 1.0f}}};
-        VkClearValue clear_depth{.depthStencil = {1.0f, 0}};
-        VkClearValue clear_values[] = {clear_color, clear_depth};
-        VkRenderPassBeginInfo rp_info{.sType=VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO, .renderPass=veekay::app.vk_render_pass, .framebuffer=framebuffer, .renderArea=renderArea, .clearValueCount=2, .pClearValues=clear_values};
-        vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+    VkCommandBufferBeginInfo begin_info{};
+    begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    begin_info.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+    vkBeginCommandBuffer(cmd, &begin_info);
 
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-		VkDeviceSize zero_offset = 0;
-		VkBuffer current_vertex_buffer = VK_NULL_HANDLE;
-		VkBuffer current_index_buffer = VK_NULL_HANDLE;
-		const size_t model_uniforms_alignment =
-			veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
+    // ==========================================
+    // 1. ПОДГОТОВКА ДАННЫХ
+    // ==========================================
+    float near_plane = 1.0f, far_plane = 20.0f;
+    veekay::mat4 light_projection = ortho(-10.0f, 10.0f, -10.0f, 10.0f, near_plane, far_plane);
+    veekay::vec3 lightPos = -directional_light.direction * 10.0f;
+    veekay::mat4 light_view = veekay::mat4::look_at(lightPos, {0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f});
+    veekay::mat4 light_space_matrix = light_view * light_projection;
 
-        for (size_t i = 0; i < models.size(); ++i) {
-            const Model& model = models[i];
-            const Mesh& mesh = model.mesh;
+    // Обновляем камеру для основного прохода
+    float aspect = float(veekay::app.window_width) / float(veekay::app.window_height);
+    *(SceneUniforms*)scene_uniforms_buffer->mapped_region = { camera.view_projection(aspect) };
 
-            if (current_vertex_buffer != mesh.vertex_buffer->buffer) {
-                current_vertex_buffer = mesh.vertex_buffer->buffer;
-                vkCmdBindVertexBuffers(cmd, 0, 1, &current_vertex_buffer, &zero_offset);
-            }
-            if (current_index_buffer != mesh.index_buffer->buffer) {
-                current_index_buffer = mesh.index_buffer->buffer;
-                vkCmdBindIndexBuffer(cmd, current_index_buffer, zero_offset, VK_INDEX_TYPE_UINT32);
-            }
-            uint32_t dyn_offset = i * model_uniforms_alignment;
-            vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
+    // ==========================================
+    // 2. SHADOW PASS (Рендер теней)
+    // ==========================================
 
-            // ИСПРАВЛЕНИЕ: полная структура Push, включая матрицу света
-            struct Push {
-                veekay::vec3 cam; float time;
-                veekay::vec3 amb; float _p1;
-                veekay::vec3 dir; float _p2;
-                veekay::vec3 dcol; float _p3;
-                veekay::mat4 light_space_matrix; // Добавлена матрица
-                veekay::vec3 s_pos; float _s_p0;
-                veekay::vec3 s_dir; float _s_p1;
-                veekay::vec3 s_col; float _s_p2;
-                float s_inner; float s_outer;
-                float s_const; float s_lin; float s_quad;
-                float _s_p3; float _s_p4;
-            };
-            Push push = {
-                camera.position, (float)glfwGetTime(),
-                ambient_light.color, 0,
-                directional_light.direction, 0,
-                directional_light.color, 0,
-                light_space_matrix, // Передаем матрицу
-                spot_light.position, 0,
-                spot_light.direction, 0,
-                spot_light.color, 0,
-                (float)cos(toRadians(spot_light.inner_cutOff)),
-                (float)cos(toRadians(spot_light.outer_cutOff)),
-                spot_light.constant,
-                spot_light.linear,
-                spot_light.quadratic,
-                0, 0
-            };
-            vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
-            vkCmdDrawIndexed(cmd, mesh.indices, 1, 0, 0, 0);
-        }
-        vkCmdEndRenderPass(cmd);
+    VkImageMemoryBarrier toDepth{};
+    toDepth.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    toDepth.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    toDepth.newLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    toDepth.image = shadow_map_texture->image;
+    toDepth.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+    toDepth.srcAccessMask = 0;
+    toDepth.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDepth);
+
+    // ВОТ ТУТ МЫ СОЗДАЕМ renderingInfo (Убедись, что этот блок есть!)
+    VkRenderingAttachmentInfo depthAttachment{};
+    depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+    depthAttachment.imageView = shadow_map_texture->view;
+    depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+    depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    depthAttachment.clearValue.depthStencil = {1.0f, 0};
+
+    VkRenderingInfo renderingInfo{};
+    renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+    renderingInfo.renderArea = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
+    renderingInfo.layerCount = 1;
+    renderingInfo.pDepthAttachment = &depthAttachment;
+
+    // ВЫЗЫВАЕМ ФУНКЦИЮ KHR (передаем renderingInfo, который создали выше)
+    vkCmdBeginRenderingKHR(cmd, &renderingInfo);
+
+    VkViewport shadow_viewport = {0.0f, 0.0f, (float)SHADOW_MAP_SIZE, (float)SHADOW_MAP_SIZE, 0.0f, 1.0f};
+    VkRect2D shadow_scissor = {{0, 0}, {SHADOW_MAP_SIZE, SHADOW_MAP_SIZE}};
+    vkCmdSetViewport(cmd, 0, 1, &shadow_viewport);
+    vkCmdSetScissor(cmd, 0, 1, &shadow_scissor);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
+
+    VkDeviceSize zero_offset = 0;
+    const size_t model_align = veekay::graphics::Buffer::structureAlignment(sizeof(ModelUniforms));
+
+    for (size_t i = 0; i < models.size(); ++i) {
+        const Model& model = models[i];
+        vkCmdBindVertexBuffers(cmd, 0, 1, &model.mesh.vertex_buffer->buffer, &zero_offset);
+        vkCmdBindIndexBuffer(cmd, model.mesh.index_buffer->buffer, 0, VK_INDEX_TYPE_UINT32);
+
+        uint32_t dyn_offset = uint32_t(i * model_align);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
+
+        // offset 0 (VirtIO Fix)
+        vkCmdPushConstants(cmd, shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(veekay::mat4), &light_space_matrix);
+
+        vkCmdDrawIndexed(cmd, model.mesh.indices, 1, 0, 0, 0);
     }
+
+    // ВЫЗЫВАЕМ КОНЕЦ KHR
+    vkCmdEndRenderingKHR(cmd);
+
+    // ==========================================
+    // 3. MAIN PASS (Основной рендер)
+    // ==========================================
+
+    VkImageMemoryBarrier toRead = toDepth;
+    toRead.oldLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
+    toRead.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+    toRead.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    
+    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
+
+    VkRenderPassBeginInfo rp_info{};
+    rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rp_info.renderPass = veekay::app.vk_render_pass;
+    rp_info.framebuffer = framebuffer;
+    rp_info.renderArea = {{0, 0}, {veekay::app.window_width, veekay::app.window_height}};
+    VkClearValue clears[2] = { {{0.1f, 0.1f, 0.1f, 1.0f}}, {1.0f, 0} };
+    rp_info.clearValueCount = 2;
+    rp_info.pClearValues = clears;
+
+    vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+    VkViewport viewport = {0.0f, 0.0f, (float)veekay::app.window_width, (float)veekay::app.window_height, 0.0f, 1.0f};
+    VkRect2D scissor = {{0, 0}, {veekay::app.window_width, veekay::app.window_height}};
+    vkCmdSetViewport(cmd, 0, 1, &viewport);
+    vkCmdSetScissor(cmd, 0, 1, &scissor);
+
+    Push push{};
+    push.camera_position = camera.position;
+    push.time = global_time; // Используем глобальную переменную времени
+    push.ambient_color = ambient_light.color;
+    push.directional_dir = directional_light.direction;
+    push.directional_color = directional_light.color;
+    push.light_space_matrix = light_space_matrix;
+    
+    push.spot_pos = spot_light.position;
+    push.spot_dir = spot_light.direction;
+    push.spot_col = spot_light.color;
+    push.inner_cutOff_cos = cosf(to_radians(spot_light.inner_cutOff));
+    push.outer_cutOff_cos = cosf(to_radians(spot_light.outer_cutOff));
+    push.spot_constant = spot_light.constant;
+    push.spot_linear = spot_light.linear;
+    push.spot_quadratic = spot_light.quadratic;
+
+    VkBuffer current_vb = VK_NULL_HANDLE;
+    VkBuffer current_ib = VK_NULL_HANDLE;
+
+    for (size_t i = 0; i < models.size(); ++i) {
+        const Model& model = models[i];
+        
+        if (current_vb != model.mesh.vertex_buffer->buffer) {
+            current_vb = model.mesh.vertex_buffer->buffer;
+            vkCmdBindVertexBuffers(cmd, 0, 1, &current_vb, &zero_offset);
+        }
+        if (current_ib != model.mesh.index_buffer->buffer) {
+            current_ib = model.mesh.index_buffer->buffer;
+            vkCmdBindIndexBuffer(cmd, current_ib, 0, VK_INDEX_TYPE_UINT32);
+        }
+
+        uint32_t dyn_offset = uint32_t(i * model_align);
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 0, 1, &model.descriptor_set, 1, &dyn_offset);
+
+        vkCmdPushConstants(cmd, pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(Push), &push);
+        vkCmdDrawIndexed(cmd, model.mesh.indices, 1, 0, 0, 0);
+    }
+
+    vkCmdEndRenderPass(cmd);
     vkEndCommandBuffer(cmd);
 }
 
-}
 
 int main() {
 	return veekay::run({
