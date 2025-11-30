@@ -79,20 +79,37 @@ layout(location=0) out vec4 final_color;
 
 // LAB 4: Функция для расчета тени
 float calculate_shadow(vec4 light_space_pos) {
-    // 1. Перспективное деление: переводим из 4D в 3D пространство
+    // 1. Перспективное деление
     vec3 proj_coords = light_space_pos.xyz / light_space_pos.w;
-    // 2. Переводим координаты из диапазона [-1, 1] в диапазон [0, 1] для текстуры
+    // 2. Перевод в [0, 1]
     proj_coords = proj_coords * 0.5 + 0.5;
 
-    // 3. Получаем текущую глубину пикселя от лица света
+    // Если за пределами карты — света нет (или есть, зависит от логики, тут считаем что свет есть)
+    if(proj_coords.z > 1.0) return 1.0;
+
     float current_depth = proj_coords.z;
 
-    // 4. Сэмплируем карту теней
-    // Функция texture() для sampler2DShadow автоматически сравнивает current_depth
-    // с глубиной, хранящейся в карте теней.
-    // Она вернет 1.0, если пиксель освещен, и 0.0, если в тени.
-    // Благодаря линейной фильтрации сэмплера, она также вернет промежуточные значения на краях тени, создавая мягкость.
-    float shadow = texture(shadow_map_sampler, vec3(proj_coords.xy, current_depth));
+    // --- НАСТРОЙКА BIAS (Убирает полоски) ---
+    // Увеличили bias, так как у тебя большие координаты сцены.
+    // Это убьет полоски на полу наповал.
+    float bias = 0.005; 
+
+    // --- PCF (МЯГКИЕ ТЕНИ) ---
+    float shadow = 0.0;
+    // Узнаем размер одного пикселя текстуры (чтобы знать, насколько шагать)
+    // shadow_map_sampler - это sampler2DShadow, textureSize возвращает размер.
+    vec2 texelSize = 1.0 / textureSize(shadow_map_sampler, 0);
+
+    // Проходимся циклом 3x3 вокруг пикселя
+    for(int x = -1; x <= 1; ++x) {
+        for(int y = -1; y <= 1; ++y) {
+            // Берем соседние пиксели
+            float pcfDepth = texture(shadow_map_sampler, vec3(proj_coords.xy + vec2(x, y) * texelSize, current_depth - bias)); 
+            shadow += pcfDepth;
+        }
+    }
+    // Усредняем (делим на 9 выборок)
+    shadow /= 9.0;
     
     return shadow;
 }
@@ -187,9 +204,13 @@ void main() {
     // LAB 4: Вычисляем фактор тени
     float shadow = calculate_shadow(f_light_space_pos);
     // Добавляем проверку, чтобы избежать теней "под" плоскостью
-    if (dot(N, normalize(-pc.directional_dir)) < 0.1) {
-        shadow = 1.0;
-    }
+    
+    
+    //if (dot(N, normalize(-pc.directional_dir)) < 0.1) {
+    //    shadow = 1.0;
+    //}
+
+
 
     vec3 dir_light_dir = normalize(-pc.directional_dir);
     color += shadow * calculate_blinn_phong(N, V, dir_light_dir, pc.directional_color, 1.0, albedo, specular); // добавляем направленный цвет; постоянное направление цвета
