@@ -67,13 +67,20 @@ layout (set = 0, binding = 3, std430) readonly buffer SpotLightsBuffer {
 
 layout (set = 1, binding = 0) uniform sampler2D texSampler;
 
-layout (set = 2, binding = 0) uniform sampler2DShadow shadowMap;
+layout (set = 2, binding = 0) uniform sampler2DShadow shadowMap; //тип сэмплера для теней
+
+// массив сэмплеров для прожектора
+
 layout (set = 2, binding = 1) uniform sampler2DShadow spotShadowMap0;
 layout (set = 2, binding = 2) uniform sampler2DShadow spotShadowMap1;
 
-// --- ФУНКЦИЯ РАСЧЕТА ТЕНИ ---
+// тут все тени рассчитываем
 float calculateShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir, sampler2DShadow shadowSampler) {
+    
+    // Превращаем однородные координаты (4D) в обычные 3D
     vec3 projCoords = lightSpacePos.xyz / lightSpacePos.w;
+
+    // Переводим из диапазона [-1, 1] в [0, 1] (как хранятся текстуры)
     projCoords.xy = projCoords.xy * 0.5 + 0.5;
 
     // Если за границами карты теней — света нет (или есть, зависит от логики, тут возвращаем 1.0)
@@ -82,10 +89,22 @@ float calculateShadow(vec4 lightSpacePos, vec3 normal, vec3 lightDir, sampler2DS
         return 1.0;
     }
 
+    // эта штука должна помогать бороться с теневой рябью
+    // пытаемся сдвинуть глубину сравнения чуть назад
+    // меняется в зависимости от угла наклона поверхности к свету
     float bias = max(0.005 * (1.0 - dot(normal, lightDir)), 0.0005);
+
+    // 3 компонент для сравнения PCF (происходит автоматически внутри texture)
+    // biast тут для борьбы с артефактами
+    // shadowSampler — это sampler2DShadow.
+    // Функция texture() принимает vec3, где:
+    // .xy — координаты на карте
+    // .z  — глубина нашего пикселя (минус bias)
+    // Видеокарта САМА сравнивает .z со значением в текстуре,
+    // усредняет 4 соседних пикселя и возвращает результат (0.0..1.0).
     float shadow = texture(shadowSampler, vec3(projCoords.xy, projCoords.z - bias));
 
-    return shadow;
+    return shadow; // 1.0 свет или 0.0 тень с градацией по краям
 }
 
 
@@ -175,6 +194,7 @@ void main() {
             // Тени от прожекторов
             float spotShadow = 1.0;
             if (i < shadow_casting_spot_count) {
+                // выбираем нужную карту в зависимости от индекса источника
                 if (i == 0) {
                     spotShadow = calculateShadow(f_pos_spot_light_space[0], normal, ldir, spotShadowMap0);
                 } else if (i == 1) {
@@ -182,6 +202,7 @@ void main() {
                 }
             }
 
+            // применяем тень к свету прожектора
             color += calculateBlinnPhong(ldir, light.color, normal, view_dir, albedoWithTexture) * total_attenuation * spotShadow;
         }
     }

@@ -16,6 +16,21 @@
 #include <imgui.h>
 #include <vulkan/vulkan_core.h>
 
+
+/*
+В этой лабораторной работе вам предстоит реализовать технику наложения теней. 
+Предстоит работа с рендерингом вне кадра “от лица” направленного источника света в текстуру глубины 
+с использованием расширения Vulkan 1.2 Dynamic Rendering, а также работа с использованием данных о 
+глубине сцены, чтобы создать эффект тени на поверхностях моделей.
+
+Реализуйте тени от одного или двух прожекторных или точечных источников света. 
+Поскольку источников света будет больше одного, то стратегия выбора кандидатов должна зависеть от 
+разных факторов: дистанция до камеры, радиус свечения и, для прожекторных, направление свечения.
+
+*/
+
+
+
 namespace {
 
 size_t aligned_sizeof;
@@ -180,6 +195,7 @@ inline namespace {
     VkDescriptorSetLayout descriptor_set_layout_shadow; 
     VkDescriptorSet descriptor_set_shadow;
 
+    // массив структур
     VkImage spot_shadow_images[max_shadow_casting_spots];
     VkDeviceMemory spot_shadow_image_memories[max_shadow_casting_spots];
     VkImageView spot_shadow_image_views[max_shadow_casting_spots];
@@ -469,6 +485,7 @@ void initialize(VkCommandBuffer cmd) {
     fragment_shader_module = loadShaderModule("./shaders/shader.frag.spv");
     shadow_vertex_shader_module = loadShaderModule("./shaders/shadow.vert.spv");
 
+    // тут подготавливаем текстуру глубины. VK_FORMAT_D32_SFLOAT - формат глубины   
     createImage(shadow_map_size, shadow_map_size, VK_FORMAT_D32_SFLOAT, 
                 VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 
                 shadow_image, shadow_image_memory);
@@ -485,7 +502,7 @@ void initialize(VkCommandBuffer cmd) {
     {
         VkSamplerCreateInfo samplerInfo{};
         samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-        samplerInfo.magFilter = VK_FILTER_LINEAR;
+        samplerInfo.magFilter = VK_FILTER_LINEAR; // линейная фильтрация
         samplerInfo.minFilter = VK_FILTER_LINEAR;
         samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
         samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
@@ -496,8 +513,8 @@ void initialize(VkCommandBuffer cmd) {
         samplerInfo.minLod = 0.0f;
         samplerInfo.maxLod = 1.0f;
         samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
-        samplerInfo.compareEnable = VK_TRUE;
-        samplerInfo.compareOp = VK_COMPARE_OP_LESS;
+        samplerInfo.compareEnable = VK_TRUE; //включаем режим сравнения
+        samplerInfo.compareOp = VK_COMPARE_OP_LESS; // проверка (dist < texture_val)
 
         vkCreateSampler(device, &samplerInfo, nullptr, &shadow_sampler);
     }
@@ -1087,12 +1104,11 @@ void update(double time) {
         // Левый куб: крутится вокруг Y
         models[1].transform.rotation.y = (float)time * 0.5f; 
         
-        // Правый куб: крутится сложно (восьмеркой)
+        // Правый куб: крутится восьмеркой
         models[2].transform.rotation.x = (float)time * 0.3f;
         models[2].transform.rotation.z = (float)time * 0.2f;
 
         // Передний куб: подпрыгивает
-        // Исходная высота была -0.5f. Добавляем синус.
         models[3].transform.position.y = -0.5f + sinf((float)time * 2.0f) * 0.2f;
         models[3].transform.rotation.y = -(float)time;
     }
@@ -1310,12 +1326,19 @@ void update(double time) {
     
     veekay::vec3 light_dir = veekay::vec3::normalized(sun_light_direction);
     veekay::vec3 light_pos = -light_dir * 20.0f;
+
+    // матрица вида (смотрим с позиции света в центр)
     veekay::mat4 light_view = look_at_matrix(light_pos, {0, 0, 0}, {0, 1, 0});
     
     float ortho_size = 50.0f;
     float z_near = 1.0f;
     float z_far = 50.0f;
+
+    // матрица проекции - ортогональная "коробка" 50 на 50
+    // ось Y вниз, так как вулкан
     veekay::mat4 light_proj = orthographic_matrix(-ortho_size, ortho_size, -ortho_size, ortho_size, z_near, z_far);
+
+    // итоговая матрица света
     veekay::mat4 light_view_projection = light_view * light_proj;
     
     veekay::mat4 spot_matrices[max_shadow_casting_spots];
@@ -1390,8 +1413,13 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
         veekay::app.vk_device, "vkCmdBeginRenderingKHR");
     auto vkCmdEndRenderingKHR = (PFN_vkCmdEndRenderingKHR)vkGetDeviceProcAddr(
         veekay::app.vk_device, "vkCmdEndRenderingKHR");
-
+    // тут идет 1 проход - рендер пас.
+    // в рамках него рендерим сцену глазами света в текстуру глубины
+    // на экране ниче не выводится
+    
+    // 1.1 тень от солнца
     {
+        // говорю видюхе приготовиться писать в текстуру тени
         insertImageBarrier(cmd, shadow_image,
                            0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
@@ -1399,29 +1427,36 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
 
+        // настройка аттачмента (куда рисовать)
         VkRenderingAttachmentInfoKHR depthAttachment{};
         depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-        depthAttachment.imageView = shadow_image_view;
-        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
-        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        depthAttachment.imageView = shadow_image_view; // куда рисовать, в какую текстуру
+        depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL; // удобный режим для записи
+        depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR; // очищаем карту каждый кадр (так как тени каждый кадр меняются)
+        depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE; // сохраняем результат, так как потом на кубы накладывать тени
         depthAttachment.clearValue.depthStencil = {1.0f, 0};
 
         VkRenderingInfoKHR renderingInfo{};
         renderingInfo.sType = VK_STRUCTURE_TYPE_RENDERING_INFO_KHR;
         renderingInfo.renderArea = {{0, 0}, {shadow_map_size, shadow_map_size}};
         renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = 0;
-        renderingInfo.pDepthAttachment = &depthAttachment;
+        renderingInfo.colorAttachmentCount = 0; // у наст тут только тень, без цветов
+        renderingInfo.pDepthAttachment = &depthAttachment; // подключаем глубину
 
+        // динамический рендеринг в текстуру
         if (vkCmdBeginRenderingKHR) {
             vkCmdBeginRenderingKHR(cmd, &renderingInfo);
+
+            // подключаем теневой шейдер
+            // считаем только gl_position (вектор из 4 переменных: где находится точка и насколько глубоко)
             vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadow_pipeline);
 
             VkBuffer current_vertex_buffer = VK_NULL_HANDLE;
             VkBuffer current_index_buffer = VK_NULL_HANDLE;
             VkDeviceSize zero_offset = 0;
 
+
+            // рисуем все модельки
             for (const auto& model : models) {
                 const Mesh& mesh = model.mesh;
 
@@ -1438,6 +1473,8 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
                 push.model_matrix = model.transform.matrix();
                 push.light_view_proj = light_VP;
 
+
+                // передаем матрицу света
                 vkCmdPushConstants(cmd, shadow_pipeline_layout, VK_SHADER_STAGE_VERTEX_BIT, 
                                  0, sizeof(ShadowPushConstants), &push);
                 vkCmdDrawIndexed(cmd, mesh.indices, 1, 0, 0, 0);
@@ -1445,13 +1482,16 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 
             vkCmdEndRenderingKHR(cmd);
         }
-
+        
+        // Барьер: переводим текстуру в режим чтения (нужно читать во 2 проходе) 
         insertImageBarrier(cmd, shadow_image,
                            VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
 
+    // 1.2 Тени от прожектора
+    // проходимся по первым N прожекторам
     for (uint32_t spotIdx = 0; spotIdx < shadowCastingSpotCount; ++spotIdx) {
         insertImageBarrier(cmd, spot_shadow_images[spotIdx],
                            0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -1460,9 +1500,10 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
                            VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                            VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT);
 
+        // рендерим сцену в карту тени конкретного прожектора
         VkRenderingAttachmentInfoKHR depthAttachment{};
         depthAttachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
-        depthAttachment.imageView = spot_shadow_image_views[spotIdx];
+        depthAttachment.imageView = spot_shadow_image_views[spotIdx]; // уникальная для каждого прожектора
         depthAttachment.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         depthAttachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         depthAttachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -1513,21 +1554,28 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
                            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
     }
 
+    // 2 проход: основной рендер 
+    // тут рендерим сцену уже глазами игрока на экран
+    // используем текстуры теней, созданные выше
     {
+        // настраиваем очистку экрана (цвет фона)
         VkClearValue clear_values[2];
         clear_values[0].color = {0.1f, 0.1f, 0.1f, 1.0f};
         clear_values[1].depthStencil = {1.0f, 0};
 
+        // начало обучного рендер паса
         VkRenderPassBeginInfo rp_info{};
         rp_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
         rp_info.renderPass = veekay::app.vk_render_pass;
-        rp_info.framebuffer = framebuffer;
+        rp_info.framebuffer = framebuffer; // рисуем на экран
         rp_info.renderArea.offset = {0, 0};
         rp_info.renderArea.extent = {veekay::app.window_width, veekay::app.window_height};
         rp_info.clearValueCount = 2;
         rp_info.pClearValues = clear_values;
 
         vkCmdBeginRenderPass(cmd, &rp_info, VK_SUBPASS_CONTENTS_INLINE);
+
+        // подключаем основной шейдер (с цветом, текстурами и расчетом света)
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
         VkDeviceSize zero_offset = 0;
@@ -1549,14 +1597,17 @@ void render(VkCommandBuffer cmd, VkFramebuffer framebuffer) {
 
             uint32_t offset = (uint32_t)(i * aligned_sizeof);
 
+            // биндим дескрипторы
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 
                                   0, 1, &descriptor_set_ubo, 1, &offset);
 
+            // структура материала - прекрасная ленна
             if (model.material && model.material->set != VK_NULL_HANDLE) {
                 vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 
                                       1, 1, &model.material->set, 0, nullptr);
             }
 
+            // текстуры теней (то, что нарисовали в 1 проходе)
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline_layout, 
                                   2, 1, &descriptor_set_shadow, 0, nullptr);
 

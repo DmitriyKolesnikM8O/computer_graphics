@@ -53,6 +53,8 @@ void main() {
     f_normal = normal.xyz;
     f_uv = v_uv;
 
+    // light_view_projection пришла из C++ (SceneUniforms)
+    // Мы считаем позицию текущей точки с точки зрения света
     f_pos_light_space = light_view_projection * world_position;
     
     for (uint i = 0; i < 2; ++i) {
